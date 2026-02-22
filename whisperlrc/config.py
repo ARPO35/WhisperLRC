@@ -30,6 +30,8 @@ class TranslationConfig:
     llm_model: str = ""
     llm_base_url: str = ""
     llm_api_key: str = ""
+    llm_prompt_file: str = "prompt.txt"
+    llm_preferences_file: str = "preferences.txt"
     llm_batch_size: int = 10
     llm_context_window: int = 5
     timeout_sec: int = 30

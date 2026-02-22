@@ -7,16 +7,18 @@ compute_type = "float16"
 
 [pipeline]
 input_formats = ["mp3", "wav"]
-retry_asr = 1
-retry_translate = 1
+retry_asr = 3
+retry_translate = 5
 
 [translation]
 backend = "llm"
 target = "zh-Hans"
 llm_provider = "openai_compatible"
-llm_model = ""
-llm_base_url = ""
-llm_api_key = ""
+llm_model = "deepseek-ai/deepseek-v3.2"
+llm_base_url = "https://api.siliconflow.cn/v1"
+llm_api_key = "sk-ezozekhvgculbauasqarvmuhsseolrfrsxlqmoegyuahuuxc"
+llm_prompt_file = "prompt.txt"
+llm_preferences_file = "preferences.txt"
 llm_batch_size = 10
 llm_context_window = 5
 timeout_sec = 30

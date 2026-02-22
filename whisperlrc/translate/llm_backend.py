@@ -9,9 +9,6 @@ from urllib import error, request
 from whisperlrc.config import TranslationConfig
 from whisperlrc.translate.base import Translator
 
-PROMPT_FILE = "prompt.txt"
-PREFERENCES_FILE = "preferences.txt"
-
 
 class LLMTranslator(Translator):
     """
@@ -276,8 +273,17 @@ class LLMTranslator(Translator):
     def _project_root(self) -> Path:
         return Path(__file__).resolve().parents[2]
 
+    def _resolve_config_path(self, raw_path: str) -> Path:
+        v = raw_path.strip()
+        if not v:
+            raise RuntimeError("配置路径不能为空")
+        p = Path(v)
+        if p.is_absolute():
+            return p
+        return self._project_root() / p
+
     def _load_prompt_template(self) -> str:
-        prompt_path = self._project_root() / PROMPT_FILE
+        prompt_path = self._resolve_config_path(self.cfg.llm_prompt_file)
         if not prompt_path.exists():
             raise RuntimeError(f"缺少提示词文件：{prompt_path}")
         text = prompt_path.read_text(encoding="utf-8").strip()
@@ -286,7 +292,7 @@ class LLMTranslator(Translator):
         return text
 
     def _load_preferences(self) -> None:
-        pref_path = self._project_root() / PREFERENCES_FILE
+        pref_path = self._resolve_config_path(self.cfg.llm_preferences_file)
         if not pref_path.exists():
             logging.warning("未找到偏好文件，将以空偏好继续：%s", pref_path)
             return

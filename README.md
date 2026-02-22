@@ -29,10 +29,12 @@ python main.py
 - `llm_model`
 - `llm_base_url`
 - `llm_api_key`
+- `llm_prompt_file`（提示词文件路径，支持相对或绝对路径）
+- `llm_preferences_file`（翻译偏好文件路径，支持相对或绝对路径）
 - `llm_batch_size`（默认每组 10 句）
 - `llm_context_window`（默认前后文各 5 句）
 
-提示词与翻译偏好改为读取项目根目录文件（`settings.toml` 旧字段已弃用）：
+提示词与翻译偏好从上述路径读取。若配置相对路径，则按项目根目录解析：
 
 - `prompt.txt`：系统提示词模板。可使用 `{perf}` 占位符插入偏好字典。
 - `preferences.txt`：每行一条偏好。
