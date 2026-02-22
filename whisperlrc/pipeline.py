@@ -170,6 +170,18 @@ def process_batch(
             )
             continue
 
+        asr_lines: list[str] = []
+        for sent in run_output.sentences:
+            conf = "" if sent.segment_confidence is None else f" | conf={sent.segment_confidence:.4f}"
+            asr_lines.append(f"[{sent.start_sec:.2f}-{sent.end_sec:.2f}] {sent.ja_text}{conf}")
+        emit(
+            {
+                "type": "asr_output",
+                "file": audio_file.name,
+                "text": "\n".join(asr_lines),
+            }
+        )
+
         try:
             sentences, tr_err = _translate_sentences(
                 run_output.sentences,

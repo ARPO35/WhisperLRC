@@ -62,6 +62,7 @@ class SessionState:
     batch_last_request_json: str = ""
     batch_last_response_json: str = ""
     batch_running_path: str = ""
+    batch_logs: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -234,6 +235,7 @@ def _start_batch_task(
     state.batch_last_request_json = ""
     state.batch_last_response_json = ""
     state.batch_running_path = f"输入={input_dir} | 输出={output_dir} | 配置={config}"
+    state.batch_logs = [f"[启动] {state.batch_running_path}"]
 
     def emit(event: dict[str, Any]) -> None:
         task_q.put(event)
@@ -272,22 +274,44 @@ def _consume_batch_events(state: SessionState) -> None:
         etype = str(event.get("type", "")).strip()
         if etype == "batch_start":
             state.batch_total_files = int(event.get("total_files", 0))
+            state.batch_logs.append(f"[批处理] 总文件数={state.batch_total_files}")
             continue
         if etype == "file_start":
             state.batch_current_file = str(event.get("file", ""))
             state.batch_current_file_index = int(event.get("file_index", 0))
-            state.batch_group_index = 0
-            state.batch_group_total = 0
+            state.batch_logs.append(
+                f"[文件开始] {state.batch_current_file_index}/{int(event.get('total_files', 0))} {state.batch_current_file}"
+            )
+            continue
+        if etype == "asr_output":
+            state.batch_logs.append("[ASR输出]")
+            state.batch_logs.append(str(event.get("text", "")).strip() or "（空）")
             continue
         if etype == "translation_group_start":
             state.batch_group_index = int(event.get("group_index", 0))
             state.batch_group_total = int(event.get("total_groups", 0))
+            state.batch_logs.append(f"[翻译分组] {state.batch_group_index}/{state.batch_group_total} 开始")
             continue
         if etype == "llm_request":
             state.batch_last_request_json = str(event.get("json", ""))
+            state.batch_logs.append("[LLM请求]")
+            state.batch_logs.append(state.batch_last_request_json or "（空）")
             continue
         if etype == "llm_response":
             state.batch_last_response_json = str(event.get("json", ""))
+            state.batch_logs.append("[LLM响应]")
+            state.batch_logs.append(state.batch_last_response_json or "（空）")
+            continue
+        if etype == "llm_cot":
+            state.batch_logs.append("[LLM思考]")
+            state.batch_logs.append(str(event.get("text", "")).strip() or "（空）")
+            continue
+        if etype == "file_end":
+            state.batch_logs.append(
+                f"[文件结束] {event.get('file', '')} | 状态={event.get('status', '')} | 输出={event.get('output', '')}"
+            )
+            if event.get("error"):
+                state.batch_logs.append(f"[文件错误] {event.get('error')}")
             continue
         if etype == "worker_done":
             state.batch_running = False
@@ -300,6 +324,7 @@ def _consume_batch_events(state: SessionState) -> None:
                 f"总文件数：{state.batch_total_files}",
                 f"最后处理文件：{state.batch_current_file or '（无）'}",
             ]
+            state.batch_logs.append(f"[结束] 状态={status} 退出码={state.batch_result_rc}")
             continue
         if etype == "worker_error":
             state.batch_running = False
@@ -312,6 +337,7 @@ def _consume_batch_events(state: SessionState) -> None:
                 f"总文件数：{state.batch_total_files}",
                 f"最后处理文件：{state.batch_current_file or '（无）'}",
             ]
+            state.batch_logs.append(f"[异常] {state.batch_error}")
             continue
 
 
@@ -931,35 +957,15 @@ def _render_processing_page(state: SessionState) -> Page:
         print("========")
         print(state.batch_running_path or "（未设置）")
         print()
-        if state.batch_running:
-            status = "运行中"
-            if state.batch_requested_cancel:
-                status = "已请求取消，等待当前步骤结束"
-            print(f"状态：{status}")
-        else:
-            print("状态：已结束")
+        if state.batch_requested_cancel and state.batch_running:
+            print("状态：已请求取消，等待当前步骤结束")
+            print()
 
-        total = state.batch_total_files
-        current_idx = state.batch_current_file_index
-        if total > 0:
-            print(f"文件进度：{current_idx}/{total}")
-        else:
-            print("文件进度：0/0")
-        print(f"当前文件：{state.batch_current_file or '（无）'}")
-
-        if state.batch_group_total > 0:
-            print(f"翻译分组：{state.batch_group_index}/{state.batch_group_total}")
-        else:
-            print("翻译分组：0/0")
-        print()
-
-        print("最近一次请求 JSON：")
-        print("------------------")
-        print(state.batch_last_request_json or "（暂无）")
-        print()
-        print("最近一次响应 JSON：")
-        print("------------------")
-        print(state.batch_last_response_json or "（暂无）")
+        print("详细日志")
+        print("--------")
+        log_lines = state.batch_logs[-220:]
+        for line in log_lines:
+            print(line)
         print()
 
         if state.batch_running:
@@ -977,7 +983,7 @@ def _render_processing_page(state: SessionState) -> Page:
                 return Page.BATCH
             if key == "q":
                 return Page.MAIN
-            time.sleep(0.08)
+            time.sleep(0.12)
             continue
 
         lines = state.batch_summary_lines or [
