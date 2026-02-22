@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import os
 import json
+import queue
+import threading
+import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -18,6 +21,7 @@ class Page(Enum):
     CHECK = auto()
     HELP = auto()
     INFO = auto()
+    API_TEST = auto()
     CONFIG_EDIT_MENU = auto()
     CONFIG_EDIT_FIELDS = auto()
     CONFIG_EDIT_LLM = auto()
@@ -36,6 +40,10 @@ class SessionState:
     edit_section: str = "asr"
     edit_offset: int = 0
     edit_translation_llm_only: bool = False
+    api_test_config: Path = Path()
+    api_test_running: bool = False
+    api_test_result_lines: list[str] = field(default_factory=list)
+    api_test_queue: queue.Queue[tuple[bool, list[str]]] | None = None
 
 
 @dataclass
@@ -124,6 +132,27 @@ def _confirm_action(prompt: str) -> str:
     print("按 y 继续执行，按 n 取消，q 返回主菜单，Esc 返回（默认 n）")
     key = _read_single_key({"y", "n", "q"}, allow_esc=True)
     return key or "n"
+
+
+def _read_key_nonblocking() -> str:
+    if os.name != "nt":
+        return ""
+    try:
+        import msvcrt
+
+        if not msvcrt.kbhit():
+            return ""
+        ch = msvcrt.getwch()
+        if not ch:
+            return ""
+        if ch in {"\x00", "\xe0"}:
+            msvcrt.getwch()
+            return ""
+        if ch == "\x1b":
+            return "esc"
+        return ch.lower()
+    except Exception:
+        return ""
 
 
 def _print_path_bar(path: str) -> None:
@@ -221,6 +250,34 @@ def _build_api_hello_check(config: Path) -> list[str]:
     except Exception as e:
         lines.append(f"结果：API 测试失败：{e}")
     return lines
+
+
+def _start_api_test(state: SessionState, config: Path) -> None:
+    q: queue.Queue[tuple[bool, list[str]]] = queue.Queue()
+    state.api_test_queue = q
+    state.api_test_config = config
+    state.api_test_running = True
+    state.api_test_result_lines = []
+
+    def _worker() -> None:
+        try:
+            lines = _build_api_hello_check(config)
+            q.put((True, lines))
+        except Exception as e:
+            q.put((False, [f"测试失败：{e}"]))
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _consume_api_test_result(state: SessionState) -> None:
+    if state.api_test_queue is None:
+        return
+    try:
+        _ok, lines = state.api_test_queue.get_nowait()
+    except queue.Empty:
+        return
+    state.api_test_running = False
+    state.api_test_result_lines = lines
 
 
 SECTION_TITLES: dict[str, str] = {
@@ -397,7 +454,7 @@ def _render_config_page(state: SessionState) -> Page:
     print("配置页面")
     print("========")
     print("1) 查看当前配置摘要")
-    print("2) 修改配置项（可保存到文件）")
+    print("2) 修改配置项")
     print("3) 切换会话配置文件路径")
     print("4) 重置会话配置为 settings.toml")
     print()
@@ -477,9 +534,9 @@ def _render_check_page(state: SessionState) -> Page:
     print("检查页面")
     print("========")
     print("1) 检查当前会话配置的翻译后端")
-    print("2) API 测试（发送 hello）")
+    print("2) API 测试")
     print("3) 使用自定义配置文件检查")
-    print("4) 使用自定义配置做 API 测试（发送 hello）")
+    print("4) 使用自定义配置做 API 测试")
     print()
     print("q 主菜单，Esc 返回")
 
@@ -496,10 +553,8 @@ def _render_check_page(state: SessionState) -> Page:
             return _show_info(state, "翻译后端检查", [f"检查失败：{e}"], Page.CHECK, "主菜单->检查->翻译后端检查")
 
     if key == "2":
-        try:
-            return _show_info(state, "API 测试", _build_api_hello_check(state.config_path), Page.CHECK, "主菜单->检查->API测试")
-        except Exception as e:
-            return _show_info(state, "API 测试", [f"测试失败：{e}"], Page.CHECK, "主菜单->检查->API测试")
+        _start_api_test(state, state.config_path)
+        return Page.API_TEST
 
     if key == "3":
         config_res = _read_line_with_cancel("配置文件路径", str(state.config_path))
@@ -518,10 +573,8 @@ def _render_check_page(state: SessionState) -> Page:
             return Page.MAIN
         if config_res.kind != "value":
             return _show_info(state, "API 测试", ["已取消本次测试。"], Page.CHECK, "主菜单->检查->API测试")
-        try:
-            return _show_info(state, "API 测试", _build_api_hello_check(Path(config_res.value)), Page.CHECK, "主菜单->检查->API测试")
-        except Exception as e:
-            return _show_info(state, "API 测试", [f"测试失败：{e}"], Page.CHECK, "主菜单->检查->API测试")
+        _start_api_test(state, Path(config_res.value))
+        return Page.API_TEST
 
     return Page.CHECK
 
@@ -533,7 +586,7 @@ def _render_config_edit_menu_page(state: SessionState) -> Page:
     print("1) ASR")
     print("2) 管线")
     print("3) 翻译基础")
-    print("4) LLM 配置（聚合）")
+    print("4) LLM 配置")
     print("5) 输出")
     print("6) Schema")
     print("7) 保存并写入当前配置文件")
@@ -693,7 +746,7 @@ def _render_config_edit_llm_page(state: SessionState) -> Page:
     items: list[tuple[str, Any]] = [(k, getattr(section_obj, k)) for k in llm_keys]
 
     _print_path_bar("主菜单->配置->修改配置项->LLM配置")
-    print("LLM 配置（聚合）")
+    print("LLM 配置")
     print("==============")
     for idx, (name, value) in enumerate(items, start=1):
         print(f"{idx}) {name} = {_format_value_for_menu(value)}")
@@ -742,6 +795,38 @@ def _render_config_edit_llm_page(state: SessionState) -> Page:
     return Page.CONFIG_EDIT_LLM
 
 
+def _render_api_test_page(state: SessionState) -> Page:
+    while True:
+        _clear_screen()
+        _print_path_bar("主菜单->检查->API测试")
+        _consume_api_test_result(state)
+        if state.api_test_running:
+            print("API 测试")
+            print("========")
+            print(f"配置文件：{state.api_test_config}")
+            print("正在测试，请稍候...")
+            print("Esc 返回上级，q 主菜单")
+            key = _read_key_nonblocking()
+            if key == "esc":
+                return Page.CHECK
+            if key == "q":
+                return Page.MAIN
+            time.sleep(0.08)
+            continue
+
+        print("API 测试")
+        print("========")
+        for line in state.api_test_result_lines or ["测试已结束。"]:
+            print(line)
+        print()
+        print("Esc 返回上级，q 主菜单")
+        key = _read_single_key({"q"}, allow_esc=True)
+        if key == "q":
+            return Page.MAIN
+        if key == "esc":
+            return Page.CHECK
+
+
 def _render_help_page() -> Page:
     _print_path_bar("主菜单->帮助")
     print("帮助页面")
@@ -753,7 +838,7 @@ def _render_help_page() -> Page:
     print("- 信息结果以单独页面展示，Esc 关闭")
     print("- 提示词和翻译偏好文件路径可在配置中设置")
     print("- 在 prompt.txt 中可使用 {perf} 插入偏好字典")
-    print("- 检查页面支持 API 测试（发送 hello）")
+    print("- 检查页面支持 API 测试")
     print()
     print("q 主菜单，Esc 返回")
 
@@ -805,6 +890,9 @@ def run_interactive_menu() -> int:
             continue
         if page == Page.CHECK:
             page = _render_check_page(state)
+            continue
+        if page == Page.API_TEST:
+            page = _render_api_test_page(state)
             continue
         if page == Page.CONFIG_EDIT_MENU:
             page = _render_config_edit_menu_page(state)
