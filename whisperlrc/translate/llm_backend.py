@@ -139,8 +139,24 @@ class LLMTranslator(Translator):
                 )
                 if self._is_cancelled(cancel_token):
                     raise RuntimeError("用户取消处理")
-                translations, terms = self._parse_json_response(raw, expected_count=len(group_texts))
+                translations, terms, cot = self._parse_json_response(raw, expected_count=len(group_texts))
                 self._merge_terms(terms)
+                if cot:
+                    self._emit_event(
+                        event_cb,
+                        {
+                            "type": "llm_cot",
+                            "text": cot,
+                            "meta": {
+                                "group_index": group_index,
+                                "total_groups": total_groups,
+                                "group_start": group_start,
+                                "group_size": len(group_texts),
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                            },
+                        },
+                    )
                 return translations
             except Exception as e:
                 last_err = e
@@ -285,7 +301,7 @@ class LLMTranslator(Translator):
             f"目标语言：{tgt}",
             "输出要求：必须只输出 JSON，不能包含 Markdown 代码块或解释文字。",
             "输出结构：",
-            '{ "translations":[{"index":0,"text":"翻译结果"}], "terms":[{"src":"原文术语","tgt":"译文术语","note":"可选说明"}] }',
+            '{ "translations":[{"index":0,"text":"翻译结果"}], "terms":[{"src":"原文术语","tgt":"译文术语","note":"可选说明"}], "cot":"可选思考摘要" }',
         ]
         return "\n".join(lines)
 
@@ -328,12 +344,8 @@ class LLMTranslator(Translator):
         content: str,
         *,
         expected_count: int,
-    ) -> tuple[list[str], list[dict[str, str]]]:
-        normalized = self._strip_markdown_fence(content)
-        try:
-            data = json.loads(normalized)
-        except Exception as e:
-            raise RuntimeError(f"JSON 解析失败：{e}") from e
+    ) -> tuple[list[str], list[dict[str, str]], str]:
+        data = self._load_json_object_robust(content)
         if not isinstance(data, dict):
             raise RuntimeError("JSON 顶层必须是对象")
 
@@ -371,7 +383,8 @@ class LLMTranslator(Translator):
                 if not src or not tgt:
                     continue
                 terms.append({"src": src, "tgt": tgt, "note": note})
-        return translations, terms
+        cot = self._normalize_cot(data.get("cot"))
+        return translations, terms, cot
 
     def _strip_markdown_fence(self, text: str) -> str:
         s = text.strip()
@@ -383,6 +396,37 @@ class LLMTranslator(Translator):
         if lines and lines[-1].strip().startswith("```"):
             lines = lines[:-1]
         return "\n".join(lines).strip()
+
+    def _load_json_object_robust(self, content: str) -> dict[str, Any]:
+        normalized = self._strip_markdown_fence(content).strip()
+        try:
+            obj = json.loads(normalized)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+        decoder = json.JSONDecoder()
+        for i, ch in enumerate(normalized):
+            if ch != "{":
+                continue
+            try:
+                obj, _end = decoder.raw_decode(normalized, i)
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                return obj
+        raise RuntimeError("JSON 解析失败：未找到有效 JSON 对象")
+
+    def _normalize_cot(self, raw: Any) -> str:
+        if raw is None:
+            return ""
+        if isinstance(raw, str):
+            return raw.strip()
+        try:
+            return json.dumps(raw, ensure_ascii=False, indent=2).strip()
+        except Exception:
+            return str(raw).strip()
 
     def _project_root(self) -> Path:
         return Path(__file__).resolve().parents[2]
