@@ -30,6 +30,10 @@ class TranslationConfig:
     llm_model: str = ""
     llm_base_url: str = ""
     llm_api_key: str = ""
+    llm_system_prompt: str = ""
+    llm_batch_size: int = 10
+    llm_context_window: int = 5
+    llm_preferences: list[dict[str, Any]] = field(default_factory=list)
     timeout_sec: int = 30
 
 
@@ -112,3 +116,53 @@ def apply_cli_overrides(
     if translate_backend:
         cfg.translation.backend = translate_backend
     return cfg
+
+
+def _toml_quote(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
+
+
+def _toml_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return _toml_quote(value)
+    raise TypeError(f"不支持的 TOML 标量类型: {type(value)}")
+
+
+def _toml_list(values: list[Any]) -> str:
+    if not values:
+        return "[]"
+    if all(isinstance(v, str) for v in values):
+        return "[" + ", ".join(_toml_quote(v) for v in values) + "]"
+    if all(isinstance(v, dict) for v in values):
+        rendered_items: list[str] = []
+        for item in values:
+            pairs = [f"{k} = {_toml_scalar(v)}" for k, v in item.items() if isinstance(v, (str, int, bool))]
+            rendered_items.append("{ " + ", ".join(pairs) + " }")
+        return "[\n  " + ",\n  ".join(rendered_items) + "\n]"
+    return "[" + ", ".join(_toml_scalar(v) for v in values) + "]"
+
+
+def save_config(config_path: Path, cfg: AppConfig) -> None:
+    data = cfg.to_dict()
+    lines: list[str] = []
+    section_order = ["asr", "pipeline", "translation", "output", "schema"]
+
+    for section in section_order:
+        section_data = data.get(section, {})
+        if not isinstance(section_data, dict):
+            continue
+        lines.append(f"[{section}]")
+        for key, value in section_data.items():
+            if isinstance(value, list):
+                lines.append(f"{key} = {_toml_list(value)}")
+            else:
+                lines.append(f"{key} = {_toml_scalar(value)}")
+        lines.append("")
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
