@@ -27,12 +27,15 @@ class WhisperRelistenExecutor:
         if global_index < 0 or global_index >= len(self.ctx.sentences):
             return {
                 "ok": False,
-                "error": f"index 越界：{global_index}",
+                "error": f"index 越界: {global_index}",
                 "index": global_index,
+                "context_prev": [],
+                "context_next": [],
                 "candidates": [],
             }
 
         sent = self.ctx.sentences[global_index]
+        context_prev, context_next = self._build_context(global_index)
         clip_start = max(0.0, float(sent.start_sec) - self.options.padding_sec)
         clip_end = max(clip_start, float(sent.end_sec) + self.options.padding_sec)
         try:
@@ -41,11 +44,13 @@ class WhisperRelistenExecutor:
         except Exception as e:
             return {
                 "ok": False,
-                "error": f"重听失败：{e}",
+                "error": f"重听失败: {e}",
                 "index": global_index,
                 "sentence_id": sent.sentence_id,
                 "clip_start_sec": clip_start,
                 "clip_end_sec": clip_end,
+                "context_prev": context_prev,
+                "context_next": context_next,
                 "candidates": [],
             }
 
@@ -56,8 +61,17 @@ class WhisperRelistenExecutor:
             "source_text": sent.ja_text,
             "clip_start_sec": clip_start,
             "clip_end_sec": clip_end,
+            "context_prev": context_prev,
+            "context_next": context_next,
             "candidates": candidates,
         }
+
+    def _build_context(self, global_index: int, window: int = 1) -> tuple[list[str], list[str]]:
+        start = max(0, global_index - window)
+        end = min(len(self.ctx.sentences), global_index + window + 1)
+        prev = [self.ctx.sentences[i].ja_text for i in range(start, global_index)]
+        next_ = [self.ctx.sentences[i].ja_text for i in range(global_index + 1, end)]
+        return prev, next_
 
     def _slice_audio(self, start_sec: float, end_sec: float) -> Any:
         audio = self._load_audio()

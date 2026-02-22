@@ -21,6 +21,7 @@ class LLMTranslator(Translator):
     TOOL_NAME_RELISTEN = "asr_relisten_sentence"
     TOOL_MAX_CALLS_PER_GROUP = 5
     TOOL_MAX_ROUNDS = 8
+    TOOL_MAX_CALLS_PER_INDEX = 1
 
     def __init__(self, cfg: TranslationConfig) -> None:
         self.cfg = cfg
@@ -135,25 +136,47 @@ class LLMTranslator(Translator):
                     src=src,
                     tgt=tgt,
                 )
-                raw = self._request_chat_completion_with_tools(
-                    system_prompt,
-                    input_payload,
-                    event_cb=event_cb,
-                    request_meta={
-                        "group_index": group_index,
-                        "total_groups": total_groups,
-                        "group_start": group_start,
-                        "group_size": len(group_texts),
-                        "attempt": attempt,
-                        "max_attempts": max_attempts,
-                    },
-                    group_start=group_start,
-                    group_size=len(group_texts),
-                    relisten_executor=relisten_executor,
-                )
+                request_meta = {
+                    "group_index": group_index,
+                    "total_groups": total_groups,
+                    "group_start": group_start,
+                    "group_size": len(group_texts),
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                }
+                raw = ""
+                try:
+                    raw = self._request_chat_completion(
+                        system_prompt,
+                        input_payload,
+                        event_cb=event_cb,
+                        request_meta={**request_meta, "phase": "direct"},
+                    )
+                    parsed = self._parse_json_response(raw, expected_count=len(group_texts))
+                except Exception as direct_err:
+                    if relisten_executor is None:
+                        raise direct_err
+                    self._emit_event(
+                        event_cb,
+                        {
+                            "type": "llm_tool_error",
+                            "text": f"直出失败，进入工具会话：{direct_err}",
+                            "meta": {**request_meta, "phase": "direct"},
+                        },
+                    )
+                    raw = self._request_chat_completion_with_tools(
+                        system_prompt,
+                        input_payload,
+                        event_cb=event_cb,
+                        request_meta={**request_meta, "phase": "tool_session"},
+                        group_start=group_start,
+                        group_size=len(group_texts),
+                        relisten_executor=relisten_executor,
+                    )
+                    parsed = self._parse_json_response(raw, expected_count=len(group_texts))
                 if self._is_cancelled(cancel_token):
                     raise RuntimeError("用户取消处理")
-                translations, terms, cot = self._parse_json_response(raw, expected_count=len(group_texts))
+                translations, terms, cot = parsed
                 self._merge_terms(terms)
                 if cot:
                     self._emit_event(
@@ -320,6 +343,7 @@ class LLMTranslator(Translator):
         ]
         tools = [self._build_relisten_tool_spec()]
         used_calls = 0
+        per_index_calls: dict[int, int] = {}
         tools_enabled = True
 
         for round_idx in range(1, self.TOOL_MAX_ROUNDS + 1):
@@ -361,6 +385,7 @@ class LLMTranslator(Translator):
 
             tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
             if tools_enabled and isinstance(tool_calls, list) and tool_calls:
+                force_finalize = False
                 messages.append(
                     {
                         "role": "assistant",
@@ -374,6 +399,7 @@ class LLMTranslator(Translator):
                     call_meta.update({"tool_calls_used": used_calls, "tool_calls_budget": self.TOOL_MAX_CALLS_PER_GROUP})
                     call_name = str(call.get("function", {}).get("name", "")).strip()
                     call_args = str(call.get("function", {}).get("arguments", "")).strip()
+                    call_index = self._extract_tool_index(call_args)
                     self._emit_event(
                         event_cb,
                         {
@@ -389,6 +415,17 @@ class LLMTranslator(Translator):
                             "ok": False,
                             "error": f"工具调用已达上限 {self.TOOL_MAX_CALLS_PER_GROUP}",
                         }
+                        force_finalize = True
+                    elif (
+                        call_index is not None
+                        and per_index_calls.get(call_index, 0) >= self.TOOL_MAX_CALLS_PER_INDEX
+                    ):
+                        result_obj = {
+                            "ok": False,
+                            "error": f"index={call_index} 已调用过，禁止重复重听",
+                            "index": call_index,
+                        }
+                        force_finalize = True
                     else:
                         result_obj = self._execute_tool_call(
                             call_name=call_name,
@@ -397,6 +434,8 @@ class LLMTranslator(Translator):
                             group_size=group_size,
                             relisten_executor=relisten_executor,
                         )
+                        if call_index is not None:
+                            per_index_calls[call_index] = per_index_calls.get(call_index, 0) + 1
 
                     result_json = self._safe_json_dump(result_obj)
                     self._emit_event(
@@ -416,6 +455,18 @@ class LLMTranslator(Translator):
                             "content": result_json,
                         }
                     )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": self._build_tool_session_user_message(
+                            used_calls=used_calls,
+                            per_index_calls=per_index_calls,
+                            force_finalize=force_finalize,
+                        ),
+                    }
+                )
+                if force_finalize:
+                    tools_enabled = False
                 continue
 
             content = self._message_content_to_text(message.get("content"))
@@ -475,6 +526,49 @@ class LLMTranslator(Translator):
 
         global_idx = group_start + local_idx
         return relisten_executor.relisten_by_global_index(global_idx)
+
+    def _extract_tool_index(self, arguments: str) -> int | None:
+        if not arguments:
+            return None
+        try:
+            obj = json.loads(arguments)
+        except Exception:
+            return None
+        if not isinstance(obj, dict):
+            return None
+        raw_idx = obj.get("index")
+        try:
+            return int(raw_idx)
+        except Exception:
+            return None
+
+    def _build_tool_session_user_message(
+        self,
+        *,
+        used_calls: int,
+        per_index_calls: dict[int, int],
+        force_finalize: bool,
+    ) -> str:
+        summary = json.dumps(
+            {
+                "used_calls": used_calls,
+                "call_limit": self.TOOL_MAX_CALLS_PER_GROUP,
+                "per_index_calls": per_index_calls,
+                "per_index_limit": self.TOOL_MAX_CALLS_PER_INDEX,
+            },
+            ensure_ascii=False,
+        )
+        if force_finalize:
+            return (
+                "工具调用已收敛，请不要继续调用工具。"
+                "请基于已有上下文与工具结果，直接输出最终 JSON。"
+                f"\n会话摘要：{summary}"
+            )
+        return (
+            "请先检查当前会话摘要，避免重复调用同一句。"
+            "若仍有明显识别问题再调用工具；否则直接输出最终 JSON。"
+            f"\n会话摘要：{summary}"
+        )
 
     def _message_content_to_text(self, content: Any) -> str:
         if isinstance(content, str):
@@ -540,7 +634,7 @@ class LLMTranslator(Translator):
             f"目标语言：{tgt}",
             "输出要求：最终必须只输出 JSON，不能包含 Markdown 代码块或解释文字。",
             "输出结构：",
-            '{ "translations":[{"index":0,"text":"翻译结果"}], "terms":[{"src":"原文术语","tgt":"译文术语","note":"可选说明"}], "cot":"可选思考摘要" }',
+            '{ "translations":[{"index":0,"text":"翻译结果"}], "terms":[{"src":"原文术语","tgt":"译文术语","note":"可选说明"}] }',
         ]
         return "\n".join(lines)
 
@@ -623,9 +717,7 @@ class LLMTranslator(Translator):
                 if not src or not tgt:
                     continue
                 terms.append({"src": src, "tgt": tgt, "note": note})
-        cot_field = self._normalize_cot(data.get("cot"))
-        cot = self._merge_cot_text(think_cot, cot_field)
-        return translations, terms, cot
+        return translations, terms, think_cot
 
     def _strip_markdown_fence(self, text: str) -> str:
         s = text.strip()
@@ -659,16 +751,6 @@ class LLMTranslator(Translator):
                 return obj
         raise RuntimeError("JSON 解析失败：未找到有效 JSON 对象")
 
-    def _normalize_cot(self, raw: Any) -> str:
-        if raw is None:
-            return ""
-        if isinstance(raw, str):
-            return raw.strip()
-        try:
-            return json.dumps(raw, ensure_ascii=False, indent=2).strip()
-        except Exception:
-            return str(raw).strip()
-
     def _extract_think_block(self, content: str) -> tuple[str, str]:
         text = content.strip()
         pattern = re.compile(r"<think>(.*?)</think>", flags=re.IGNORECASE | re.DOTALL)
@@ -678,11 +760,6 @@ class LLMTranslator(Translator):
         think_text = match.group(1).strip()
         cleaned = pattern.sub("", text, count=1).strip()
         return think_text, cleaned
-
-    def _merge_cot_text(self, think_cot: str, cot_field: str) -> str:
-        if think_cot and cot_field:
-            return f"{think_cot}\n\n---\n\n{cot_field}"
-        return think_cot or cot_field
 
     def _project_root(self) -> Path:
         return Path(__file__).resolve().parents[2]
