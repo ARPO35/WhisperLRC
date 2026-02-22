@@ -1,0 +1,27 @@
+[asr]
+backend = "faster_whisper"
+model = "large-v3"
+language = "ja"
+device = "cuda"
+compute_type = "float16"
+
+[pipeline]
+input_formats = ["mp3", "wav"]
+retry_asr = 1
+retry_translate = 1
+
+[translation]
+backend = "llm"
+target = "zh-Hans"
+llm_provider = "openai_compatible"
+llm_model = ""
+llm_base_url = ""
+llm_api_key = ""
+timeout_sec = 30
+
+[output]
+json_ext = ".json"
+write_lrc = false
+
+[schema]
+version = "1.0"
