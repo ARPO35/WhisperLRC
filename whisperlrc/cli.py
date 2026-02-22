@@ -306,6 +306,23 @@ def _consume_batch_events(state: SessionState) -> None:
             state.batch_logs.append("[LLM响应]")
             state.batch_logs.append(state.batch_last_response_json or "（空）")
             continue
+        if etype == "llm_tool_call":
+            state.batch_logs.append("[LLM工具调用]")
+            name = str(event.get("name", "")).strip()
+            args = str(event.get("arguments", "")).strip()
+            state.batch_logs.append(f"name={name}" if name else "（无工具名）")
+            state.batch_logs.append(args or "（无参数）")
+            continue
+        if etype == "llm_tool_result":
+            state.batch_logs.append("[LLM工具结果]")
+            state.batch_logs.append(str(event.get("json", "")).strip() or "（空）")
+            continue
+        if etype == "llm_tool_error":
+            state.batch_logs.append("[LLM工具错误]")
+            text = str(event.get("text", "")).strip()
+            if text:
+                state.batch_logs.append(text)
+            continue
         if etype == "llm_cot":
             state.batch_logs.append("[LLM思考]")
             state.batch_logs.append(str(event.get("text", "")).strip() or "（空）")

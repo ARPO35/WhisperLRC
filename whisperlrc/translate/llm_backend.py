@@ -9,12 +9,18 @@ from urllib import error, request
 
 from whisperlrc.config import TranslationConfig
 from whisperlrc.translate.base import Translator
+from whisperlrc.translate.relisten_tool import WhisperRelistenExecutor
+from whisperlrc.translate.tooling import TranslationToolContext
 
 
 class LLMTranslator(Translator):
     """
-    OpenAI 兼容 LLM 翻译器。
+    OpenAI compatible LLM translator.
     """
+
+    TOOL_NAME_RELISTEN = "asr_relisten_sentence"
+    TOOL_MAX_CALLS_PER_GROUP = 5
+    TOOL_MAX_ROUNDS = 8
 
     def __init__(self, cfg: TranslationConfig) -> None:
         self.cfg = cfg
@@ -31,6 +37,7 @@ class LLMTranslator(Translator):
         retry: int = 0,
         event_cb: Callable[[dict[str, Any]], None] | None = None,
         cancel_token: Any | None = None,
+        tool_ctx: TranslationToolContext | None = None,
     ) -> list[str]:
         if not texts:
             return []
@@ -39,6 +46,8 @@ class LLMTranslator(Translator):
         batch_size = max(1, int(self.cfg.llm_batch_size))
         total_groups = (len(texts) + batch_size - 1) // batch_size
         out: list[str] = []
+        relisten_executor = WhisperRelistenExecutor(tool_ctx) if tool_ctx is not None else None
+
         for group_start in range(0, len(texts), batch_size):
             if self._is_cancelled(cancel_token):
                 raise RuntimeError("用户取消处理")
@@ -67,6 +76,7 @@ class LLMTranslator(Translator):
                 cancel_token=cancel_token,
                 group_index=group_index,
                 total_groups=total_groups,
+                relisten_executor=relisten_executor,
             )
             out.extend(translated)
             self._emit_event(
@@ -106,6 +116,7 @@ class LLMTranslator(Translator):
         cancel_token: Any | None = None,
         group_index: int,
         total_groups: int,
+        relisten_executor: WhisperRelistenExecutor | None = None,
     ) -> list[str]:
         max_attempts = max(1, retry + 1)
         last_err: Exception | None = None
@@ -125,9 +136,9 @@ class LLMTranslator(Translator):
                     tgt=tgt,
                     input_payload=input_payload,
                 )
-                raw = self._request_chat_completion(
+                raw = self._request_chat_completion_with_tools(
                     system_prompt,
-                    "请仅返回 JSON。",
+                    "可按需调用工具修正识别，再最终仅返回 JSON。",
                     event_cb=event_cb,
                     request_meta={
                         "group_index": group_index,
@@ -137,6 +148,9 @@ class LLMTranslator(Translator):
                         "attempt": attempt,
                         "max_attempts": max_attempts,
                     },
+                    group_start=group_start,
+                    group_size=len(group_texts),
+                    relisten_executor=relisten_executor,
                 )
                 if self._is_cancelled(cancel_token):
                     raise RuntimeError("用户取消处理")
@@ -189,23 +203,14 @@ class LLMTranslator(Translator):
             return f"{base}/chat/completions"
         return f"{base}/v1/chat/completions"
 
-    def _request_chat_completion(
+    def _perform_chat_request(
         self,
-        system_prompt: str,
-        user_prompt: str,
+        req_payload: dict[str, Any],
         *,
         event_cb: Callable[[dict[str, Any]], None] | None = None,
         request_meta: dict[str, Any] | None = None,
-    ) -> str:
+    ) -> dict[str, Any]:
         url = self._normalize_chat_url()
-        req_payload = {
-            "model": self.cfg.llm_model,
-            "temperature": 0,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        }
         self._emit_event(
             event_cb,
             {
@@ -215,6 +220,7 @@ class LLMTranslator(Translator):
                 "meta": request_meta or {},
             },
         )
+
         req = request.Request(
             url=url,
             data=json.dumps(req_payload).encode("utf-8"),
@@ -249,13 +255,237 @@ class LLMTranslator(Translator):
 
         try:
             data = json.loads(body)
-            content = data["choices"][0]["message"]["content"]
+        except Exception as e:
+            raise RuntimeError(f"LLM 返回不是合法 JSON：{e}") from e
+        return data
+
+    def _request_chat_completion(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        event_cb: Callable[[dict[str, Any]], None] | None = None,
+        request_meta: dict[str, Any] | None = None,
+    ) -> str:
+        req_payload = {
+            "model": self.cfg.llm_model,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        data = self._perform_chat_request(req_payload, event_cb=event_cb, request_meta=request_meta)
+        try:
+            message = data["choices"][0]["message"]
         except Exception as e:
             raise RuntimeError(f"LLM 返回 JSON 结构异常：{e}") from e
 
-        if not isinstance(content, str):
-            raise RuntimeError("LLM 返回内容格式异常：message.content 不是字符串")
+        content = self._message_content_to_text(message.get("content"))
+        if not content:
+            raise RuntimeError("LLM 返回内容为空")
         return content
+
+    def _request_chat_completion_with_tools(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        event_cb: Callable[[dict[str, Any]], None] | None = None,
+        request_meta: dict[str, Any] | None = None,
+        group_start: int,
+        group_size: int,
+        relisten_executor: WhisperRelistenExecutor | None,
+    ) -> str:
+        if relisten_executor is None:
+            return self._request_chat_completion(
+                system_prompt,
+                user_prompt,
+                event_cb=event_cb,
+                request_meta=request_meta,
+            )
+
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        tools = [self._build_relisten_tool_spec()]
+        used_calls = 0
+        tools_enabled = True
+
+        for round_idx in range(1, self.TOOL_MAX_ROUNDS + 1):
+            req_payload: dict[str, Any] = {
+                "model": self.cfg.llm_model,
+                "temperature": 0,
+                "messages": messages,
+            }
+            if tools_enabled:
+                req_payload["tools"] = tools
+                req_payload["tool_choice"] = "auto"
+
+            round_meta = dict(request_meta or {})
+            round_meta.update({"tool_round": round_idx, "tools_enabled": tools_enabled})
+            try:
+                data = self._perform_chat_request(req_payload, event_cb=event_cb, request_meta=round_meta)
+            except Exception as e:
+                if tools_enabled and self._is_tools_unsupported_error(e):
+                    self._emit_event(
+                        event_cb,
+                        {
+                            "type": "llm_tool_error",
+                            "text": f"模型端不支持 tools，降级为普通请求：{e}",
+                            "meta": round_meta,
+                        },
+                    )
+                    tools_enabled = False
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": "请仅返回 JSON。"},
+                    ]
+                    continue
+                raise
+
+            try:
+                message = data["choices"][0]["message"]
+            except Exception as e:
+                raise RuntimeError(f"LLM 返回 JSON 结构异常：{e}") from e
+
+            tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
+            if tools_enabled and isinstance(tool_calls, list) and tool_calls:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": self._message_content_to_text(message.get("content")),
+                        "tool_calls": tool_calls,
+                    }
+                )
+                for call in tool_calls:
+                    used_calls += 1
+                    call_meta = dict(round_meta)
+                    call_meta.update({"tool_calls_used": used_calls, "tool_calls_budget": self.TOOL_MAX_CALLS_PER_GROUP})
+                    call_name = str(call.get("function", {}).get("name", "")).strip()
+                    call_args = str(call.get("function", {}).get("arguments", "")).strip()
+                    self._emit_event(
+                        event_cb,
+                        {
+                            "type": "llm_tool_call",
+                            "name": call_name,
+                            "arguments": call_args,
+                            "meta": call_meta,
+                        },
+                    )
+
+                    if used_calls > self.TOOL_MAX_CALLS_PER_GROUP:
+                        result_obj = {
+                            "ok": False,
+                            "error": f"工具调用已达上限 {self.TOOL_MAX_CALLS_PER_GROUP}",
+                        }
+                    else:
+                        result_obj = self._execute_tool_call(
+                            call_name=call_name,
+                            arguments=call_args,
+                            group_start=group_start,
+                            group_size=group_size,
+                            relisten_executor=relisten_executor,
+                        )
+
+                    result_json = self._safe_json_dump(result_obj)
+                    self._emit_event(
+                        event_cb,
+                        {
+                            "type": "llm_tool_result",
+                            "name": call_name,
+                            "json": result_json,
+                            "meta": call_meta,
+                        },
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": str(call.get("id", "")),
+                            "name": call_name,
+                            "content": result_json,
+                        }
+                    )
+                continue
+
+            content = self._message_content_to_text(message.get("content"))
+            if content:
+                return content
+            raise RuntimeError("LLM 返回为空，且没有 tool_calls")
+
+        raise RuntimeError("LLM tool 调用轮数超限，终止本组")
+
+    def _build_relisten_tool_spec(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.TOOL_NAME_RELISTEN,
+                "description": "针对当前翻译分组中的某一句执行 Whisper 重听，返回 3 条识别候选文本。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "index": {
+                            "type": "integer",
+                            "description": "当前分组内句子索引（0-based）。",
+                        }
+                    },
+                    "required": ["index"],
+                },
+            },
+        }
+
+    def _execute_tool_call(
+        self,
+        *,
+        call_name: str,
+        arguments: str,
+        group_start: int,
+        group_size: int,
+        relisten_executor: WhisperRelistenExecutor,
+    ) -> dict[str, Any]:
+        if call_name != self.TOOL_NAME_RELISTEN:
+            return {"ok": False, "error": f"未知工具：{call_name}"}
+
+        try:
+            arg_obj = json.loads(arguments) if arguments else {}
+        except Exception as e:
+            return {"ok": False, "error": f"工具参数不是合法 JSON：{e}", "arguments": arguments}
+
+        if not isinstance(arg_obj, dict):
+            return {"ok": False, "error": "工具参数必须是对象"}
+
+        raw_idx = arg_obj.get("index")
+        try:
+            local_idx = int(raw_idx)
+        except Exception:
+            return {"ok": False, "error": f"index 非法：{raw_idx}"}
+
+        if local_idx < 0 or local_idx >= group_size:
+            return {"ok": False, "error": f"index 越界：{local_idx}", "group_size": group_size}
+
+        global_idx = group_start + local_idx
+        return relisten_executor.relisten_by_global_index(global_idx)
+
+    def _message_content_to_text(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "\n".join(parts).strip()
+        return ""
+
+    def _is_tools_unsupported_error(self, err_obj: Exception) -> bool:
+        text = str(err_obj).lower()
+        if "tool" not in text:
+            return False
+        hints = ["unsupported", "not support", "unknown", "invalid", "unrecognized"]
+        return any(h in text for h in hints)
 
     def _emit_event(self, event_cb: Callable[[dict[str, Any]], None] | None, payload: dict[str, Any]) -> None:
         if event_cb is None:
@@ -300,7 +530,7 @@ class LLMTranslator(Translator):
             prompt,
             f"源语言：{src}",
             f"目标语言：{tgt}",
-            "输出要求：必须只输出 JSON，不能包含 Markdown 代码块或解释文字。",
+            "输出要求：最终必须只输出 JSON，不能包含 Markdown 代码块或解释文字。",
             "输出结构：",
             '{ "translations":[{"index":0,"text":"翻译结果"}], "terms":[{"src":"原文术语","tgt":"译文术语","note":"可选说明"}], "cot":"可选思考摘要" }',
         ]
@@ -474,7 +704,7 @@ class LLMTranslator(Translator):
             return
         lines = pref_path.read_text(encoding="utf-8").splitlines()
         for idx, raw in enumerate(lines, start=1):
-            line = self._normalize_preference_line(raw)
+            line = raw.strip()
             if not line or line.startswith("#"):
                 continue
             if line.lower().startswith("note:"):
@@ -498,16 +728,6 @@ class LLMTranslator(Translator):
                 logging.warning("偏好文件第 %d 行缺少 src/tgt，已跳过：%s", idx, raw)
                 continue
             self._add_term_from_obj({"src": src, "tgt": tgt, "note": note})
-
-    def _normalize_preference_line(self, raw: str) -> str:
-        line = raw.strip()
-        if not line:
-            return ""
-        # 支持 Markdown 列表前缀：- item / * item / + item / 1. item
-        line = re.sub(r"^([-*+]|\d+\.)\s+", "", line)
-        # 支持 Markdown 引用前缀：> item
-        line = re.sub(r"^>\s*", "", line)
-        return line.strip()
 
     def _render_perf_block(self) -> str:
         lines: list[str] = []

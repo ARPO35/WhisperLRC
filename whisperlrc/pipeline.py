@@ -8,6 +8,7 @@ from whisperlrc.config import AppConfig
 from whisperlrc.output.lrc_writer import write_lrc
 from whisperlrc.output.review_json_writer import write_review_json
 from whisperlrc.translate.factory import build_translator
+from whisperlrc.translate.tooling import SentenceRef, TranslationToolContext
 from whisperlrc.types import FileProcessResult, SentenceItem
 
 
@@ -35,6 +36,7 @@ def _iter_audio_files(input_dir: Path, exts: list[str]) -> list[Path]:
 
 def _translate_sentences(
     sentences: list[SentenceItem],
+    audio_path: str,
     cfg: AppConfig,
     retry: int,
     event_cb: Callable[[dict[str, Any]], None] | None = None,
@@ -42,6 +44,19 @@ def _translate_sentences(
 ) -> tuple[list[SentenceItem], str | None]:
     translator = build_translator(cfg.translation)
     ja_lines = [s.ja_text for s in sentences]
+    tool_ctx = TranslationToolContext(
+        audio_path=audio_path,
+        asr_config=cfg.asr,
+        sentences=[
+            SentenceRef(
+                sentence_id=s.sentence_id,
+                start_sec=s.start_sec,
+                end_sec=s.end_sec,
+                ja_text=s.ja_text,
+            )
+            for s in sentences
+        ],
+    )
     zh_lines = translator.translate_batch(
         ja_lines,
         src="ja",
@@ -49,6 +64,7 @@ def _translate_sentences(
         retry=retry,
         event_cb=event_cb,
         cancel_token=cancel_token,
+        tool_ctx=tool_ctx,
     )
     if len(zh_lines) != len(sentences):
         return sentences, "翻译结果数量与句子数量不一致"
@@ -186,6 +202,7 @@ def process_batch(
         try:
             sentences, tr_err = _translate_sentences(
                 run_output.sentences,
+                str(audio_file),
                 cfg,
                 cfg.pipeline.retry_translate,
                 event_cb=event_cb,
