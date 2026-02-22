@@ -24,10 +24,16 @@ def _iter_audio_files(input_dir: Path, exts: list[str]) -> list[Path]:
 def _translate_sentences(
     sentences: list[SentenceItem],
     cfg: AppConfig,
+    retry: int,
 ) -> tuple[list[SentenceItem], str | None]:
     translator = build_translator(cfg.translation)
     ja_lines = [s.ja_text for s in sentences]
-    zh_lines = translator.translate_batch(ja_lines, src="ja", tgt=cfg.translation.target)
+    zh_lines = translator.translate_batch(
+        ja_lines,
+        src="ja",
+        tgt=cfg.translation.target,
+        retry=retry,
+    )
     if len(zh_lines) != len(sentences):
         return sentences, "翻译结果数量与句子数量不一致"
     for s, zh in zip(sentences, zh_lines):
@@ -48,26 +54,11 @@ def _run_asr_with_retry(audio_file: Path, asr_engine: Any, retry: int) -> tuple[
     return None, err
 
 
-def _run_translation_with_retry(sentences: list[SentenceItem], cfg: AppConfig, retry: int) -> tuple[list[SentenceItem], str | None]:
-    max_attempts = retry + 1
-    err: str | None = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            return _translate_sentences(sentences, cfg)
-        except NotImplementedError as e:
-            err = f"翻译已跳过（功能未实现）：{e}"
-            logging.warning(err)
-            for s in sentences:
-                s.zh_text = None
-                s.translation_status = "skipped"
-            return sentences, err
-        except Exception as e:
-            err = f"翻译第 {attempt}/{max_attempts} 次尝试失败：{e}"
-            logging.error(err)
+def _mark_translation_failed(sentences: list[SentenceItem]) -> list[SentenceItem]:
     for s in sentences:
         s.zh_text = None
         s.translation_status = "failed"
-    return sentences, err
+    return sentences
 
 
 def process_batch(input_dir: Path, output_dir: Path, cfg: AppConfig) -> int:
@@ -80,7 +71,6 @@ def process_batch(input_dir: Path, output_dir: Path, cfg: AppConfig) -> int:
 
     asr_engine = FasterWhisperEngine(cfg.asr)
     ok = 0
-    partial = 0
     failed = 0
     for audio_file in audio_files:
         logging.info("开始处理：%s", audio_file.name)
@@ -99,9 +89,32 @@ def process_batch(input_dir: Path, output_dir: Path, cfg: AppConfig) -> int:
             failed += 1
             continue
 
-        sentences, tr_err = _run_translation_with_retry(run_output.sentences, cfg, cfg.pipeline.retry_translate)
-        status = "ok" if tr_err is None else "partial"
-        result = FileProcessResult(status=status, sentences=sentences, error=tr_err, logs=[])
+        try:
+            sentences, tr_err = _translate_sentences(
+                run_output.sentences,
+                cfg,
+                cfg.pipeline.retry_translate,
+            )
+            if tr_err is not None:
+                raise RuntimeError(tr_err)
+        except Exception as e:
+            err_msg = f"翻译失败，批处理终止：{e}"
+            logging.error(err_msg)
+            failed_sentences = _mark_translation_failed(run_output.sentences)
+            result = FileProcessResult(status="failed", sentences=failed_sentences, error=err_msg, logs=[])
+            out = write_review_json(
+                output_dir=output_dir,
+                base_name=audio_file.stem,
+                audio_path=str(audio_file),
+                duration_sec=run_output.duration_sec,
+                result=result,
+                cfg=cfg,
+            )
+            logging.error("已写入失败 JSON：%s", out)
+            logging.error("由于翻译错误，批处理提前终止。")
+            return 2
+
+        result = FileProcessResult(status="ok", sentences=sentences, error=tr_err, logs=[])
         out = write_review_json(
             output_dir=output_dir,
             base_name=audio_file.stem,
@@ -110,12 +123,8 @@ def process_batch(input_dir: Path, output_dir: Path, cfg: AppConfig) -> int:
             result=result,
             cfg=cfg,
         )
-        if status == "ok":
-            ok += 1
-            logging.info("处理完成：%s", out)
-        else:
-            partial += 1
-            logging.warning("部分完成（翻译不可用或失败）：%s", out)
+        ok += 1
+        logging.info("处理完成：%s", out)
 
-    logging.info("批处理结束 | 成功=%d 部分成功=%d 失败=%d 总数=%d", ok, partial, failed, len(audio_files))
+    logging.info("批处理结束 | 成功=%d 失败=%d 总数=%d", ok, failed, len(audio_files))
     return 0 if failed == 0 else 2

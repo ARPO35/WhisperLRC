@@ -13,7 +13,7 @@ def build_translator(cfg: TranslationConfig) -> Translator:
 
         return LLMTranslator(cfg)
     if backend == "auto":
-        logging.info("translation.backend=auto 已解析为 llm 占位后端")
+        logging.info("translation.backend=auto 已解析为 llm 后端")
         from whisperlrc.translate.llm_backend import LLMTranslator
 
         return LLMTranslator(cfg)

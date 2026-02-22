@@ -24,8 +24,8 @@ llm_context_window = 5
 timeout_sec = 30
 
 [output]
-default_input_dir = "input_audio"
-default_output_dir = "output"
+default_input_dir = "t/input"
+default_output_dir = "t/output"
 json_ext = ".json"
 write_lrc = false
 
