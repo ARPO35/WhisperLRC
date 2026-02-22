@@ -48,6 +48,17 @@ class LLMTranslator(Translator):
             out.extend(translated)
         return out
 
+    def test_api_hello(self) -> str:
+        self._validate_runtime_config()
+        content = self._request_chat_completion(
+            "你是连通性检查助手。请用一句中文简短回复。",
+            "hello",
+        )
+        text = content.strip()
+        if not text:
+            raise RuntimeError("API 返回为空")
+        return text
+
     def _translate_group_with_retry(
         self,
         *,

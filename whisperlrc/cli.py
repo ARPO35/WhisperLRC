@@ -20,6 +20,7 @@ class Page(Enum):
     INFO = auto()
     CONFIG_EDIT_MENU = auto()
     CONFIG_EDIT_FIELDS = auto()
+    CONFIG_EDIT_LLM = auto()
 
 
 @dataclass
@@ -34,6 +35,7 @@ class SessionState:
     edit_cfg: AppConfig | None = None
     edit_section: str = "asr"
     edit_offset: int = 0
+    edit_translation_llm_only: bool = False
 
 
 @dataclass
@@ -194,6 +196,30 @@ def _build_translation_check(config: Path) -> list[str]:
         lines.append(f"结果：翻译功能尚未实现：{e}")
     except Exception as e:
         lines.append(f"结果：翻译后端检查失败：{e}")
+    return lines
+
+
+def _build_api_hello_check(config: Path) -> list[str]:
+    from whisperlrc.translate.factory import build_translator
+
+    cfg = load_config(config)
+    lines = [
+        f"配置文件：{config}",
+        f"翻译后端：{cfg.translation.backend}",
+        "测试请求：hello",
+    ]
+    translator = build_translator(cfg.translation)
+    try:
+        if hasattr(translator, "test_api_hello"):
+            reply = str(getattr(translator, "test_api_hello")()).strip()
+        else:
+            reply_list = translator.translate_batch(["hello"], src="en", tgt=cfg.translation.target, retry=0)
+            reply = reply_list[0].strip() if reply_list else ""
+        if not reply:
+            raise RuntimeError("API 回复为空")
+        lines.append(f"结果：连通成功，回复：{reply}")
+    except Exception as e:
+        lines.append(f"结果：API 测试失败：{e}")
     return lines
 
 
@@ -371,9 +397,9 @@ def _render_config_page(state: SessionState) -> Page:
     print("配置页面")
     print("========")
     print("1) 查看当前配置摘要")
-    print("2) 切换会话配置文件路径")
-    print("3) 重置会话配置为 settings.toml")
-    print("4) 修改配置项（可保存到文件）")
+    print("2) 修改配置项（可保存到文件）")
+    print("3) 切换会话配置文件路径")
+    print("4) 重置会话配置为 settings.toml")
     print()
     print("q 主菜单，Esc 返回")
 
@@ -390,6 +416,16 @@ def _render_config_page(state: SessionState) -> Page:
             return _show_info(state, "当前配置摘要", [f"读取失败：{e}"], Page.CONFIG, "主菜单->配置->当前配置摘要")
 
     if key == "2":
+        try:
+            state.edit_cfg = load_config(state.config_path)
+            state.edit_section = "asr"
+            state.edit_offset = 0
+            state.edit_translation_llm_only = False
+            return Page.CONFIG_EDIT_MENU
+        except Exception as e:
+            return _show_info(state, "配置结果", [f"加载配置失败：{e}"], Page.CONFIG, "主菜单->配置->配置结果")
+
+    if key == "3":
         config_res = _read_line_with_cancel("配置文件路径", str(state.config_path))
         if config_res.kind == "main":
             return Page.MAIN
@@ -414,7 +450,7 @@ def _render_config_page(state: SessionState) -> Page:
         except Exception as e:
             return _show_info(state, "配置结果", [f"已更新会话配置：{state.config_path}", f"加载默认路径失败：{e}"], Page.CONFIG, "主菜单->配置->配置结果")
 
-    if key == "3":
+    if key == "4":
         state.config_path = Path("settings.toml")
         try:
             cfg = load_config(state.config_path)
@@ -433,15 +469,6 @@ def _render_config_page(state: SessionState) -> Page:
             )
         except Exception as e:
             return _show_info(state, "配置结果", ["已重置会话配置为 settings.toml", f"加载默认路径失败：{e}"], Page.CONFIG, "主菜单->配置->配置结果")
-    if key == "4":
-        try:
-            state.edit_cfg = load_config(state.config_path)
-            state.edit_section = "asr"
-            state.edit_offset = 0
-            return Page.CONFIG_EDIT_MENU
-        except Exception as e:
-            return _show_info(state, "配置结果", [f"加载配置失败：{e}"], Page.CONFIG, "主菜单->配置->配置结果")
-
     return Page.CONFIG
 
 
@@ -450,11 +477,13 @@ def _render_check_page(state: SessionState) -> Page:
     print("检查页面")
     print("========")
     print("1) 检查当前会话配置的翻译后端")
-    print("2) 使用自定义配置文件检查")
+    print("2) API 测试（发送 hello）")
+    print("3) 使用自定义配置文件检查")
+    print("4) 使用自定义配置做 API 测试（发送 hello）")
     print()
     print("q 主菜单，Esc 返回")
 
-    key = _read_single_key({"1", "2", "q"}, allow_esc=True)
+    key = _read_single_key({"1", "2", "3", "4", "q"}, allow_esc=True)
     if key == "q":
         return Page.MAIN
     if key == "esc":
@@ -467,6 +496,12 @@ def _render_check_page(state: SessionState) -> Page:
             return _show_info(state, "翻译后端检查", [f"检查失败：{e}"], Page.CHECK, "主菜单->检查->翻译后端检查")
 
     if key == "2":
+        try:
+            return _show_info(state, "API 测试", _build_api_hello_check(state.config_path), Page.CHECK, "主菜单->检查->API测试")
+        except Exception as e:
+            return _show_info(state, "API 测试", [f"测试失败：{e}"], Page.CHECK, "主菜单->检查->API测试")
+
+    if key == "3":
         config_res = _read_line_with_cancel("配置文件路径", str(state.config_path))
         if config_res.kind == "main":
             return Page.MAIN
@@ -477,6 +512,17 @@ def _render_check_page(state: SessionState) -> Page:
         except Exception as e:
             return _show_info(state, "翻译后端检查", [f"检查失败：{e}"], Page.CHECK, "主菜单->检查->翻译后端检查")
 
+    if key == "4":
+        config_res = _read_line_with_cancel("配置文件路径", str(state.config_path))
+        if config_res.kind == "main":
+            return Page.MAIN
+        if config_res.kind != "value":
+            return _show_info(state, "API 测试", ["已取消本次测试。"], Page.CHECK, "主菜单->检查->API测试")
+        try:
+            return _show_info(state, "API 测试", _build_api_hello_check(Path(config_res.value)), Page.CHECK, "主菜单->检查->API测试")
+        except Exception as e:
+            return _show_info(state, "API 测试", [f"测试失败：{e}"], Page.CHECK, "主菜单->检查->API测试")
+
     return Page.CHECK
 
 
@@ -486,15 +532,16 @@ def _render_config_edit_menu_page(state: SessionState) -> Page:
     print("========")
     print("1) ASR")
     print("2) 管线")
-    print("3) 翻译")
-    print("4) 输出")
-    print("5) Schema")
-    print("6) 保存并写入当前配置文件")
-    print("7) 放弃本次修改")
+    print("3) 翻译基础")
+    print("4) LLM 配置（聚合）")
+    print("5) 输出")
+    print("6) Schema")
+    print("7) 保存并写入当前配置文件")
+    print("8) 放弃本次修改")
     print()
     print("q 主菜单，Esc 返回")
 
-    key = _read_single_key({"1", "2", "3", "4", "5", "6", "7", "q"}, allow_esc=True)
+    key = _read_single_key({"1", "2", "3", "4", "5", "6", "7", "8", "q"}, allow_esc=True)
     if key == "q":
         return Page.MAIN
     if key == "esc":
@@ -502,13 +549,20 @@ def _render_config_edit_menu_page(state: SessionState) -> Page:
     if state.edit_cfg is None:
         return _show_info(state, "配置结果", ["未加载配置，请重新进入修改页面。"], Page.CONFIG, "主菜单->配置->配置结果")
 
-    if key in {"1", "2", "3", "4", "5"}:
-        mapping = {"1": "asr", "2": "pipeline", "3": "translation", "4": "output", "5": "schema"}
+    if key in {"1", "2", "3", "5", "6"}:
+        mapping = {"1": "asr", "2": "pipeline", "3": "translation", "5": "output", "6": "schema"}
         state.edit_section = mapping[key]
         state.edit_offset = 0
+        state.edit_translation_llm_only = False
         return Page.CONFIG_EDIT_FIELDS
 
-    if key == "6":
+    if key == "4":
+        state.edit_section = "translation"
+        state.edit_offset = 0
+        state.edit_translation_llm_only = True
+        return Page.CONFIG_EDIT_LLM
+
+    if key == "7":
         confirm = _confirm_action(f"确认写入配置文件 {state.config_path}？")
         if confirm == "q":
             return Page.MAIN
@@ -520,7 +574,7 @@ def _render_config_edit_menu_page(state: SessionState) -> Page:
         except Exception as e:
             return _show_info(state, "配置结果", [f"保存失败：{e}"], Page.CONFIG_EDIT_MENU, "主菜单->配置->修改配置项->配置结果")
 
-    if key == "7":
+    if key == "8":
         confirm = _confirm_action("确认放弃本次未保存修改？")
         if confirm == "q":
             return Page.MAIN
@@ -540,7 +594,11 @@ def _render_config_edit_fields_page(state: SessionState) -> Page:
 
     section = state.edit_section
     section_obj = _get_section_obj(state.edit_cfg, section)
-    items: list[tuple[str, Any]] = list(section_obj.__dict__.items())
+    all_items: list[tuple[str, Any]] = list(section_obj.__dict__.items())
+    if section == "translation" and not state.edit_translation_llm_only:
+        items = [(k, v) for k, v in all_items if (not k.startswith("llm_")) and k != "timeout_sec"]
+    else:
+        items = all_items
     page_size = 7
     offset = state.edit_offset
     visible = items[offset : offset + page_size]
@@ -616,6 +674,74 @@ def _render_config_edit_fields_page(state: SessionState) -> Page:
     return Page.CONFIG_EDIT_FIELDS
 
 
+def _render_config_edit_llm_page(state: SessionState) -> Page:
+    if state.edit_cfg is None:
+        return _show_info(state, "配置结果", ["未加载配置，请重新进入修改页面。"], Page.CONFIG, "主菜单->配置->配置结果")
+
+    section_obj = _get_section_obj(state.edit_cfg, "translation")
+    llm_keys = [
+        "llm_provider",
+        "llm_model",
+        "llm_base_url",
+        "llm_api_key",
+        "llm_prompt_file",
+        "llm_preferences_file",
+        "llm_batch_size",
+        "llm_context_window",
+        "timeout_sec",
+    ]
+    items: list[tuple[str, Any]] = [(k, getattr(section_obj, k)) for k in llm_keys]
+
+    _print_path_bar("主菜单->配置->修改配置项->LLM配置")
+    print("LLM 配置（聚合）")
+    print("==============")
+    for idx, (name, value) in enumerate(items, start=1):
+        print(f"{idx}) {name} = {_format_value_for_menu(value)}")
+    print()
+    print("q 主菜单，Esc 返回")
+
+    key = _read_single_key({str(i) for i in range(1, len(items) + 1)} | {"q"}, allow_esc=True)
+    if key == "q":
+        return Page.MAIN
+    if key == "esc":
+        return Page.CONFIG_EDIT_MENU
+
+    if key.isdigit():
+        selected = int(key)
+        if 1 <= selected <= len(items):
+            field_name, current = items[selected - 1]
+            value_res = _read_line_with_cancel(f"新值 {field_name}", str(current))
+            if value_res.kind == "main":
+                return Page.MAIN
+            if value_res.kind != "value":
+                return _show_info(
+                    state,
+                    "配置结果",
+                    [f"已取消修改 {field_name}。"],
+                    Page.CONFIG_EDIT_LLM,
+                    "主菜单->配置->修改配置项->LLM配置->配置结果",
+                )
+            try:
+                new_value = _parse_field_value("translation", field_name, current, value_res.value)
+                setattr(section_obj, field_name, new_value)
+                return _show_info(
+                    state,
+                    "配置结果",
+                    [f"已更新 {field_name} = {_format_value_for_menu(new_value)}", "提示：当前仅在内存，需在“保存并写入”后落盘。"],
+                    Page.CONFIG_EDIT_LLM,
+                    "主菜单->配置->修改配置项->LLM配置->配置结果",
+                )
+            except Exception as e:
+                return _show_info(
+                    state,
+                    "配置结果",
+                    [f"更新失败：{e}"],
+                    Page.CONFIG_EDIT_LLM,
+                    "主菜单->配置->修改配置项->LLM配置->配置结果",
+                )
+    return Page.CONFIG_EDIT_LLM
+
+
 def _render_help_page() -> Page:
     _print_path_bar("主菜单->帮助")
     print("帮助页面")
@@ -627,6 +753,7 @@ def _render_help_page() -> Page:
     print("- 信息结果以单独页面展示，Esc 关闭")
     print("- 提示词和翻译偏好文件路径可在配置中设置")
     print("- 在 prompt.txt 中可使用 {perf} 插入偏好字典")
+    print("- 检查页面支持 API 测试（发送 hello）")
     print()
     print("q 主菜单，Esc 返回")
 
@@ -684,6 +811,9 @@ def run_interactive_menu() -> int:
             continue
         if page == Page.CONFIG_EDIT_FIELDS:
             page = _render_config_edit_fields_page(state)
+            continue
+        if page == Page.CONFIG_EDIT_LLM:
+            page = _render_config_edit_llm_page(state)
             continue
         if page == Page.HELP:
             page = _render_help_page()
