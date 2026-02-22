@@ -26,6 +26,7 @@ class SessionState:
     info_title: str = ""
     info_lines: list[str] = field(default_factory=list)
     info_back: Page = Page.MAIN
+    info_path: str = "主菜单"
 
 
 @dataclass
@@ -114,10 +115,22 @@ def _confirm_action(prompt: str) -> str:
     return key or "n"
 
 
-def _show_info(state: SessionState, title: str, lines: list[str], back_page: Page) -> Page:
+def _print_path_bar(path: str) -> None:
+    print(f"[{path}]")
+    print()
+
+
+def _show_info(
+    state: SessionState,
+    title: str,
+    lines: list[str],
+    back_page: Page,
+    path: str,
+) -> Page:
     state.info_title = title
     state.info_lines = lines
     state.info_back = back_page
+    state.info_path = path
     return Page.INFO
 
 
@@ -172,6 +185,7 @@ def _build_translation_check(config: Path) -> list[str]:
 
 
 def _render_main_page() -> Page | None:
+    _print_path_bar("主菜单")
     print("WhisperLRC 主菜单")
     print("===============")
     print("1) 批处理")
@@ -198,6 +212,7 @@ def _render_main_page() -> Page | None:
 
 
 def _render_batch_page(state: SessionState) -> Page:
+    _print_path_bar("主菜单->批处理")
     print("批处理页面")
     print("==========")
     print("1) 使用当前会话默认参数执行")
@@ -217,50 +232,50 @@ def _render_batch_page(state: SessionState) -> Page:
         if confirm == "q":
             return Page.MAIN
         if confirm != "y":
-            return _show_info(state, "执行结果", ["已取消执行。"], Page.BATCH)
+            return _show_info(state, "执行结果", ["已取消执行。"], Page.BATCH, "主菜单->批处理->执行结果")
         try:
             rc = _run_batch(
                 input_dir=state.input_dir,
                 output_dir=state.output_dir,
                 config=state.config_path,
             )
-            return _show_info(state, "执行结果", [f"处理完成，退出码：{rc}"], Page.BATCH)
+            return _show_info(state, "执行结果", [f"处理完成，退出码：{rc}"], Page.BATCH, "主菜单->批处理->执行结果")
         except Exception as e:
-            return _show_info(state, "执行结果", [f"处理失败：{e}"], Page.BATCH)
+            return _show_info(state, "执行结果", [f"处理失败：{e}"], Page.BATCH, "主菜单->批处理->执行结果")
 
     if key == "2":
         input_res = _read_line_with_cancel("输入目录", str(state.input_dir))
         if input_res.kind == "main":
             return Page.MAIN
         if input_res.kind != "value":
-            return _show_info(state, "执行结果", ["已取消本次自定义执行。"], Page.BATCH)
+            return _show_info(state, "执行结果", ["已取消本次自定义执行。"], Page.BATCH, "主菜单->批处理->执行结果")
 
         output_res = _read_line_with_cancel("输出目录", str(state.output_dir))
         if output_res.kind == "main":
             return Page.MAIN
         if output_res.kind != "value":
-            return _show_info(state, "执行结果", ["已取消本次自定义执行。"], Page.BATCH)
+            return _show_info(state, "执行结果", ["已取消本次自定义执行。"], Page.BATCH, "主菜单->批处理->执行结果")
 
         config_res = _read_line_with_cancel("配置文件路径", str(state.config_path))
         if config_res.kind == "main":
             return Page.MAIN
         if config_res.kind != "value":
-            return _show_info(state, "执行结果", ["已取消本次自定义执行。"], Page.BATCH)
+            return _show_info(state, "执行结果", ["已取消本次自定义执行。"], Page.BATCH, "主菜单->批处理->执行结果")
 
         confirm = _confirm_action("确认开始执行？")
         if confirm == "q":
             return Page.MAIN
         if confirm != "y":
-            return _show_info(state, "执行结果", ["已取消执行。"], Page.BATCH)
+            return _show_info(state, "执行结果", ["已取消执行。"], Page.BATCH, "主菜单->批处理->执行结果")
         try:
             rc = _run_batch(
                 input_dir=Path(input_res.value),
                 output_dir=Path(output_res.value),
                 config=Path(config_res.value),
             )
-            return _show_info(state, "执行结果", [f"处理完成，退出码：{rc}"], Page.BATCH)
+            return _show_info(state, "执行结果", [f"处理完成，退出码：{rc}"], Page.BATCH, "主菜单->批处理->执行结果")
         except Exception as e:
-            return _show_info(state, "执行结果", [f"处理失败：{e}"], Page.BATCH)
+            return _show_info(state, "执行结果", [f"处理失败：{e}"], Page.BATCH, "主菜单->批处理->执行结果")
 
     if key == "3":
         lines = [
@@ -268,12 +283,13 @@ def _render_batch_page(state: SessionState) -> Page:
             f"输出目录：{state.output_dir}",
             f"配置文件：{state.config_path}",
         ]
-        return _show_info(state, "当前运行参数", lines, Page.BATCH)
+        return _show_info(state, "当前运行参数", lines, Page.BATCH, "主菜单->批处理->当前运行参数")
 
     return Page.BATCH
 
 
 def _render_config_page(state: SessionState) -> Page:
+    _print_path_bar("主菜单->配置")
     print("配置页面")
     print("========")
     print("1) 查看当前配置摘要")
@@ -290,27 +306,28 @@ def _render_config_page(state: SessionState) -> Page:
 
     if key == "1":
         try:
-            return _show_info(state, "当前配置摘要", _build_config_summary(state.config_path), Page.CONFIG)
+            return _show_info(state, "当前配置摘要", _build_config_summary(state.config_path), Page.CONFIG, "主菜单->配置->当前配置摘要")
         except Exception as e:
-            return _show_info(state, "当前配置摘要", [f"读取失败：{e}"], Page.CONFIG)
+            return _show_info(state, "当前配置摘要", [f"读取失败：{e}"], Page.CONFIG, "主菜单->配置->当前配置摘要")
 
     if key == "2":
         config_res = _read_line_with_cancel("配置文件路径", str(state.config_path))
         if config_res.kind == "main":
             return Page.MAIN
         if config_res.kind != "value":
-            return _show_info(state, "配置结果", ["已取消修改配置路径。"], Page.CONFIG)
+            return _show_info(state, "配置结果", ["已取消修改配置路径。"], Page.CONFIG, "主菜单->配置->配置结果")
         state.config_path = Path(config_res.value)
-        return _show_info(state, "配置结果", [f"已更新会话配置：{state.config_path}"], Page.CONFIG)
+        return _show_info(state, "配置结果", [f"已更新会话配置：{state.config_path}"], Page.CONFIG, "主菜单->配置->配置结果")
 
     if key == "3":
         state.config_path = Path("settings.toml")
-        return _show_info(state, "配置结果", ["已重置会话配置为 settings.toml"], Page.CONFIG)
+        return _show_info(state, "配置结果", ["已重置会话配置为 settings.toml"], Page.CONFIG, "主菜单->配置->配置结果")
 
     return Page.CONFIG
 
 
 def _render_check_page(state: SessionState) -> Page:
+    _print_path_bar("主菜单->检查")
     print("检查页面")
     print("========")
     print("1) 检查当前会话配置的翻译后端")
@@ -326,25 +343,26 @@ def _render_check_page(state: SessionState) -> Page:
 
     if key == "1":
         try:
-            return _show_info(state, "翻译后端检查", _build_translation_check(state.config_path), Page.CHECK)
+            return _show_info(state, "翻译后端检查", _build_translation_check(state.config_path), Page.CHECK, "主菜单->检查->翻译后端检查")
         except Exception as e:
-            return _show_info(state, "翻译后端检查", [f"检查失败：{e}"], Page.CHECK)
+            return _show_info(state, "翻译后端检查", [f"检查失败：{e}"], Page.CHECK, "主菜单->检查->翻译后端检查")
 
     if key == "2":
         config_res = _read_line_with_cancel("配置文件路径", str(state.config_path))
         if config_res.kind == "main":
             return Page.MAIN
         if config_res.kind != "value":
-            return _show_info(state, "翻译后端检查", ["已取消本次检查。"], Page.CHECK)
+            return _show_info(state, "翻译后端检查", ["已取消本次检查。"], Page.CHECK, "主菜单->检查->翻译后端检查")
         try:
-            return _show_info(state, "翻译后端检查", _build_translation_check(Path(config_res.value)), Page.CHECK)
+            return _show_info(state, "翻译后端检查", _build_translation_check(Path(config_res.value)), Page.CHECK, "主菜单->检查->翻译后端检查")
         except Exception as e:
-            return _show_info(state, "翻译后端检查", [f"检查失败：{e}"], Page.CHECK)
+            return _show_info(state, "翻译后端检查", [f"检查失败：{e}"], Page.CHECK, "主菜单->检查->翻译后端检查")
 
     return Page.CHECK
 
 
 def _render_help_page() -> Page:
+    _print_path_bar("主菜单->帮助")
     print("帮助页面")
     print("========")
     print("- 数字键：即时执行当前页面选项")
@@ -362,6 +380,7 @@ def _render_help_page() -> Page:
 
 
 def _render_info_page(state: SessionState) -> Page:
+    _print_path_bar(state.info_path)
     print(state.info_title)
     print("=" * len(state.info_title))
     for line in state.info_lines:
