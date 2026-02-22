@@ -17,6 +17,8 @@ class ASRConfig:
 
 @dataclass
 class PipelineConfig:
+    default_input_dir: str = "input_audio"
+    default_output_dir: str = "output"
     input_formats: list[str] = field(default_factory=lambda: ["mp3", "wav"])
     retry_asr: int = 1
     retry_translate: int = 1

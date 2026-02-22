@@ -25,8 +25,8 @@ class Page(Enum):
 @dataclass
 class SessionState:
     config_path: Path = Path("settings.toml")
-    input_dir: Path = Path("input_audio")
-    output_dir: Path = Path("output")
+    input_dir: Path = Path()
+    output_dir: Path = Path()
     info_title: str = ""
     info_lines: list[str] = field(default_factory=list)
     info_back: Page = Page.MAIN
@@ -117,7 +117,9 @@ def _read_line_with_cancel(label: str, default: str | None = None) -> LineInputR
 
 
 def _confirm_action(prompt: str) -> str:
-    print(f"{prompt} [y/n]（q 主菜单，Esc 返回，默认 n）")
+    print("!!! 关键操作确认 !!!")
+    print(prompt)
+    print("按 y 继续执行，按 n 取消，q 返回主菜单，Esc 返回（默认 n）")
     key = _read_single_key({"y", "n", "q"}, allow_esc=True)
     return key or "n"
 
@@ -168,6 +170,8 @@ def _build_config_summary(config: Path) -> list[str]:
         f"翻译目标：{cfg.translation.target}",
         f"提示词文件：{cfg.translation.llm_prompt_file}",
         f"偏好文件：{cfg.translation.llm_preferences_file}",
+        f"默认输入目录：{cfg.pipeline.default_input_dir}",
+        f"默认输出目录：{cfg.pipeline.default_output_dir}",
         f"支持输入格式：{', '.join(cfg.pipeline.input_formats)}",
         f"ASR 重试次数：{cfg.pipeline.retry_asr}",
         f"翻译重试次数：{cfg.pipeline.retry_translate}",
@@ -392,11 +396,43 @@ def _render_config_page(state: SessionState) -> Page:
         if config_res.kind != "value":
             return _show_info(state, "配置结果", ["已取消修改配置路径。"], Page.CONFIG, "主菜单->配置->配置结果")
         state.config_path = Path(config_res.value)
-        return _show_info(state, "配置结果", [f"已更新会话配置：{state.config_path}"], Page.CONFIG, "主菜单->配置->配置结果")
+        try:
+            cfg = load_config(state.config_path)
+            state.input_dir = Path(cfg.pipeline.default_input_dir)
+            state.output_dir = Path(cfg.pipeline.default_output_dir)
+            return _show_info(
+                state,
+                "配置结果",
+                [
+                    f"已更新会话配置：{state.config_path}",
+                    f"默认输入目录：{state.input_dir}",
+                    f"默认输出目录：{state.output_dir}",
+                ],
+                Page.CONFIG,
+                "主菜单->配置->配置结果",
+            )
+        except Exception as e:
+            return _show_info(state, "配置结果", [f"已更新会话配置：{state.config_path}", f"加载默认路径失败：{e}"], Page.CONFIG, "主菜单->配置->配置结果")
 
     if key == "3":
         state.config_path = Path("settings.toml")
-        return _show_info(state, "配置结果", ["已重置会话配置为 settings.toml"], Page.CONFIG, "主菜单->配置->配置结果")
+        try:
+            cfg = load_config(state.config_path)
+            state.input_dir = Path(cfg.pipeline.default_input_dir)
+            state.output_dir = Path(cfg.pipeline.default_output_dir)
+            return _show_info(
+                state,
+                "配置结果",
+                [
+                    "已重置会话配置为 settings.toml",
+                    f"默认输入目录：{state.input_dir}",
+                    f"默认输出目录：{state.output_dir}",
+                ],
+                Page.CONFIG,
+                "主菜单->配置->配置结果",
+            )
+        except Exception as e:
+            return _show_info(state, "配置结果", ["已重置会话配置为 settings.toml", f"加载默认路径失败：{e}"], Page.CONFIG, "主菜单->配置->配置结果")
     if key == "4":
         try:
             state.edit_cfg = load_config(state.config_path)
@@ -616,6 +652,13 @@ def _render_info_page(state: SessionState) -> Page:
 def run_interactive_menu() -> int:
     setup_logging("INFO")
     state = SessionState()
+    try:
+        cfg = load_config(state.config_path)
+        state.input_dir = Path(cfg.pipeline.default_input_dir)
+        state.output_dir = Path(cfg.pipeline.default_output_dir)
+    except Exception:
+        state.input_dir = Path("input_audio")
+        state.output_dir = Path("output")
     page: Page | None = Page.MAIN
 
     while page is not None:

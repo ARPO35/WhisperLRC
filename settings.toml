@@ -6,6 +6,8 @@ device = "cuda"
 compute_type = "float16"
 
 [pipeline]
+default_input_dir = "input_audio"
+default_output_dir = "output"
 input_formats = ["mp3", "wav"]
 retry_asr = 3
 retry_translate = 5
