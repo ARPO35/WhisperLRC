@@ -314,6 +314,9 @@ def _consume_batch_events(state: SessionState) -> None:
             state.batch_logs.append(
                 f"[文件结束] {event.get('file', '')} | 状态={event.get('status', '')} | 输出={event.get('output', '')}"
             )
+            lrc_output = str(event.get("lrc_output", "")).strip()
+            if lrc_output:
+                state.batch_logs.append(f"[LRC输出] {lrc_output}")
             if event.get("error"):
                 state.batch_logs.append(f"[文件错误] {event.get('error')}")
             continue
@@ -405,6 +408,19 @@ def _build_api_hello_check(config: Path) -> list[str]:
         lines.append(f"结果：连通成功，回复：{reply}")
     except Exception as e:
         lines.append(f"结果：API 测试失败：{e}")
+    return lines
+
+
+def _build_export_lrc_result(source_path: Path, output_dir: Path | None = None) -> list[str]:
+    from whisperlrc.output.json_lrc_exporter import export_lrc_from_json_path
+
+    out_paths = export_lrc_from_json_path(source_path, output_dir=output_dir)
+    lines = [
+        f"输入路径：{source_path}",
+        f"导出数量：{len(out_paths)}",
+    ]
+    for p in out_paths:
+        lines.append(f"LRC：{p}")
     return lines
 
 
@@ -693,10 +709,12 @@ def _render_check_page(state: SessionState) -> Page:
     print("2) API 测试")
     print("3) 使用自定义配置文件检查")
     print("4) 使用自定义配置做 API 测试")
+    print("5) 从默认输出目录导出 LRC")
+    print("6) 从 JSON 路径导出 LRC")
     print()
     print("q 主菜单，Esc 返回")
 
-    key = _read_single_key({"1", "2", "3", "4", "q"}, allow_esc=True)
+    key = _read_single_key({"1", "2", "3", "4", "5", "6", "q"}, allow_esc=True)
     if key == "q":
         return Page.MAIN
     if key == "esc":
@@ -731,6 +749,31 @@ def _render_check_page(state: SessionState) -> Page:
             return _show_info(state, "API 测试", ["已取消本次测试。"], Page.CHECK, "主菜单->检查->API测试")
         _start_api_test(state, Path(config_res.value))
         return Page.API_TEST
+
+    if key == "5":
+        try:
+            source_path = state.output_dir
+            lines = _build_export_lrc_result(source_path, output_dir=source_path)
+            return _show_info(state, "LRC 导出", lines, Page.CHECK, "主菜单->检查->LRC导出")
+        except Exception as e:
+            return _show_info(state, "LRC 导出", [f"导出失败：{e}"], Page.CHECK, "主菜单->检查->LRC导出")
+
+    if key == "6":
+        path_res = _read_line_with_cancel("JSON 文件或目录路径", str(state.output_dir))
+        if path_res.kind == "main":
+            return Page.MAIN
+        if path_res.kind != "value":
+            return _show_info(state, "LRC 导出", ["已取消本次导出。"], Page.CHECK, "主菜单->检查->LRC导出")
+        out_res = _read_line_with_cancel("LRC 输出目录（可留空取消）", str(state.output_dir))
+        if out_res.kind == "main":
+            return Page.MAIN
+        if out_res.kind != "value":
+            return _show_info(state, "LRC 导出", ["已取消本次导出。"], Page.CHECK, "主菜单->检查->LRC导出")
+        try:
+            lines = _build_export_lrc_result(Path(path_res.value), output_dir=Path(out_res.value))
+            return _show_info(state, "LRC 导出", lines, Page.CHECK, "主菜单->检查->LRC导出")
+        except Exception as e:
+            return _show_info(state, "LRC 导出", [f"导出失败：{e}"], Page.CHECK, "主菜单->检查->LRC导出")
 
     return Page.CHECK
 
@@ -1040,6 +1083,7 @@ def _render_help_page() -> Page:
     print("- 提示词和翻译偏好文件路径可在配置中设置")
     print("- 在 prompt.txt 中可使用 {perf} 插入偏好字典")
     print("- 检查页面支持 API 测试")
+    print("- 检查页面支持从 JSON 导出 LRC")
     print()
     print("q 主菜单，Esc 返回")
 

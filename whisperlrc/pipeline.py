@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from whisperlrc.config import AppConfig
+from whisperlrc.output.lrc_writer import write_lrc
 from whisperlrc.output.review_json_writer import write_review_json
 from whisperlrc.translate.factory import build_translator
 from whisperlrc.types import FileProcessResult, SentenceItem
@@ -239,6 +240,27 @@ def process_batch(
             result=result,
             cfg=cfg,
         )
+        lrc_out: Path | None = None
+        if cfg.output.write_lrc:
+            try:
+                lrc_out = write_lrc(output_dir=output_dir, base_name=audio_file.stem, sentences=sentences)
+            except Exception as e:
+                err_msg = f"LRC 写入失败：{e}"
+                logging.error(err_msg)
+                emit(
+                    {
+                        "type": "file_end",
+                        "file_index": idx,
+                        "total_files": total,
+                        "file": audio_file.name,
+                        "status": "failed",
+                        "output": str(out),
+                        "lrc_output": "",
+                        "error": err_msg,
+                    }
+                )
+                failed += 1
+                continue
         ok += 1
         logging.info("处理完成：%s", out)
         emit(
@@ -249,6 +271,7 @@ def process_batch(
                 "file": audio_file.name,
                 "status": "ok",
                 "output": str(out),
+                "lrc_output": str(lrc_out) if lrc_out is not None else "",
             }
         )
 

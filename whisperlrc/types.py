@@ -27,6 +27,7 @@ class SentenceItem:
     zh_text: str | None
     translation_status: str
     segment_confidence: float | None
+    review_text: str | None = None
     word_items: list[WordItem] = field(default_factory=list)
     token_items: list[TokenItem] = field(default_factory=list)
 

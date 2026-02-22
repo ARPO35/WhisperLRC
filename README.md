@@ -85,3 +85,12 @@ LLM 响应支持两种思考内容形式，用于提升翻译质量：
 - 思考内容不参与最终翻译结果写入。
 - 解析时会优先严格解析；若响应带有前后缀文本，会自动清洗并提取 JSON 对象。
 - 主流程仍以 `translations` 为必需字段，`terms` 与 `cot` 均为可选。
+
+## LRC 导出与校对
+
+- `output.write_lrc = true` 时，批处理会在写出 JSON 的同时写出中文 LRC（`<basename>.lrc`）。
+- 若同名 LRC 已存在，会自动写为 `<basename>_1.lrc`、`<basename>_2.lrc`，不会覆盖旧文件。
+- JSON 的 `sentences` 中包含 `start_sec`/`end_sec`，并支持可选字段 `review_text`：
+  - 导出 LRC 时优先使用 `review_text`
+  - 若 `review_text` 为空则回退 `zh_text`
+- 可在“主菜单->检查”中使用“从 JSON 路径导出 LRC”对人工校对后的 JSON 重新导出。
