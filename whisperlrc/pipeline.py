@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -129,6 +130,27 @@ def process_batch(
     failed = 0
     total = len(audio_files)
     for idx, audio_file in enumerate(audio_files, start=1):
+        file_started_at = time.perf_counter()
+        asr_sec = 0.0
+        translate_sec = 0.0
+        write_sec = 0.0
+
+        def emit_file_stats(status: str) -> None:
+            total_sec = max(0.0, time.perf_counter() - file_started_at)
+            emit(
+                {
+                    "type": "file_stats",
+                    "file_index": idx,
+                    "total_files": total,
+                    "file": audio_file.name,
+                    "status": status,
+                    "asr_sec": asr_sec,
+                    "translate_sec": translate_sec,
+                    "write_sec": write_sec,
+                    "total_sec": total_sec,
+                }
+            )
+
         if cancel_token is not None and cancel_token.is_cancelled():
             logging.warning("检测到取消请求，停止批处理。")
             emit(
@@ -161,9 +183,12 @@ def process_batch(
             }
         )
         logging.info("开始处理：%s", audio_file.name)
+        asr_started_at = time.perf_counter()
         run_output, asr_err = _run_asr_with_retry(audio_file, asr_engine, cfg.pipeline.retry_asr)
+        asr_sec = max(0.0, time.perf_counter() - asr_started_at)
         if run_output is None:
             result = FileProcessResult(status="failed", sentences=[], error=asr_err, logs=[])
+            write_started_at = time.perf_counter()
             out = write_review_json(
                 output_dir=output_dir,
                 base_name=audio_file.stem,
@@ -172,8 +197,10 @@ def process_batch(
                 result=result,
                 cfg=cfg,
             )
+            write_sec = max(0.0, time.perf_counter() - write_started_at)
             logging.error("ASR 失败，已写入失败 JSON：%s", out)
             failed += 1
+            emit_file_stats("failed")
             emit(
                 {
                     "type": "file_end",
@@ -200,6 +227,7 @@ def process_batch(
         )
 
         try:
+            translate_started_at = time.perf_counter()
             sentences, tr_err = _translate_sentences(
                 run_output.sentences,
                 str(audio_file),
@@ -208,6 +236,7 @@ def process_batch(
                 event_cb=event_cb,
                 cancel_token=cancel_token,
             )
+            translate_sec = max(0.0, time.perf_counter() - translate_started_at)
             if tr_err is not None:
                 raise RuntimeError(tr_err)
         except Exception as e:
@@ -215,6 +244,7 @@ def process_batch(
             logging.error(err_msg)
             failed_sentences = _mark_translation_failed(run_output.sentences)
             result = FileProcessResult(status="failed", sentences=failed_sentences, error=err_msg, logs=[])
+            write_started_at = time.perf_counter()
             out = write_review_json(
                 output_dir=output_dir,
                 base_name=audio_file.stem,
@@ -223,8 +253,10 @@ def process_batch(
                 result=result,
                 cfg=cfg,
             )
+            write_sec = max(0.0, time.perf_counter() - write_started_at)
             logging.error("已写入失败 JSON：%s", out)
             logging.error("由于翻译错误，批处理提前终止。")
+            emit_file_stats("failed")
             emit(
                 {
                     "type": "file_end",
@@ -249,6 +281,7 @@ def process_batch(
             return 2
 
         result = FileProcessResult(status="ok", sentences=sentences, error=tr_err, logs=[])
+        write_started_at = time.perf_counter()
         out = write_review_json(
             output_dir=output_dir,
             base_name=audio_file.stem,
@@ -264,6 +297,8 @@ def process_batch(
             except Exception as e:
                 err_msg = f"LRC 写入失败：{e}"
                 logging.error(err_msg)
+                write_sec = max(0.0, time.perf_counter() - write_started_at)
+                emit_file_stats("failed")
                 emit(
                     {
                         "type": "file_end",
@@ -278,8 +313,10 @@ def process_batch(
                 )
                 failed += 1
                 continue
+        write_sec = max(0.0, time.perf_counter() - write_started_at)
         ok += 1
         logging.info("处理完成：%s", out)
+        emit_file_stats("ok")
         emit(
             {
                 "type": "file_end",

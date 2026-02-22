@@ -211,6 +211,7 @@ class LLMTranslator(Translator):
         request_meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         url = self._normalize_chat_url()
+        req_body = json.dumps(req_payload, ensure_ascii=False)
         self._emit_event(
             event_cb,
             {
@@ -223,7 +224,7 @@ class LLMTranslator(Translator):
 
         req = request.Request(
             url=url,
-            data=json.dumps(req_payload).encode("utf-8"),
+            data=req_body.encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.cfg.llm_api_key}",
@@ -249,6 +250,15 @@ class LLMTranslator(Translator):
                 "type": "llm_response",
                 "url": url,
                 "json": self._safe_json_dump(body),
+                "meta": request_meta or {},
+            },
+        )
+        self._emit_event(
+            event_cb,
+            {
+                "type": "llm_usage_chars",
+                "input_chars": len(req_body),
+                "output_chars": len(body),
                 "meta": request_meta or {},
             },
         )

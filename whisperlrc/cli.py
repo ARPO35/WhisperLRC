@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from whisperlrc.config import AppConfig, load_config, save_config
 from whisperlrc.logging import setup_logging
@@ -65,6 +65,13 @@ class SessionState:
     batch_logs: list[str] = field(default_factory=list)
     batch_log_cursor: int = 0
     batch_processing_header_printed: bool = False
+    batch_output_dir: Path = Path()
+    batch_current_log_path: Path | None = None
+    batch_current_log_fp: TextIO | None = None
+    batch_current_input_chars: int = 0
+    batch_current_output_chars: int = 0
+    batch_current_tool_calls: int = 0
+    batch_last_file_stats_lines: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -181,6 +188,63 @@ def _print_path_bar(path: str) -> None:
     print()
 
 
+def _safe_log_stem(file_name: str) -> str:
+    stem = Path(file_name).stem.strip()
+    return stem or "unnamed"
+
+
+def _ensure_unique_log_path(output_dir: Path, stem: str) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    candidate = output_dir / f"{stem}.log"
+    if not candidate.exists():
+        return candidate
+    i = 1
+    while True:
+        candidate = output_dir / f"{stem}_{i}.log"
+        if not candidate.exists():
+            return candidate
+        i += 1
+
+
+def _close_current_log_file(state: SessionState) -> None:
+    if state.batch_current_log_fp is not None:
+        try:
+            state.batch_current_log_fp.flush()
+            state.batch_current_log_fp.close()
+        except Exception:
+            pass
+    state.batch_current_log_fp = None
+    state.batch_current_log_path = None
+
+
+def _open_current_log_file(state: SessionState, file_name: str) -> None:
+    _close_current_log_file(state)
+    try:
+        output_dir = state.batch_output_dir or state.output_dir
+        log_path = _ensure_unique_log_path(output_dir, _safe_log_stem(file_name))
+        fp = log_path.open("w", encoding="utf-8")
+        state.batch_current_log_path = log_path
+        state.batch_current_log_fp = fp
+    except Exception as e:
+        state.batch_current_log_path = None
+        state.batch_current_log_fp = None
+        state.batch_logs.append(f"[日志错误] 无法创建日志文件：{e}")
+
+
+def _append_batch_log(state: SessionState, line: str) -> None:
+    state.batch_logs.append(line)
+    fp = state.batch_current_log_fp
+    if fp is None:
+        return
+    try:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        fp.write(f"{ts} | {line}\n")
+        fp.flush()
+    except Exception as e:
+        state.batch_logs.append(f"[日志错误] 写入日志失败：{e}")
+        _close_current_log_file(state)
+
+
 def _show_info(
     state: SessionState,
     title: str,
@@ -236,6 +300,12 @@ def _start_batch_task(
     state.batch_group_total = 0
     state.batch_last_request_json = ""
     state.batch_last_response_json = ""
+    state.batch_output_dir = output_dir
+    state.batch_current_input_chars = 0
+    state.batch_current_output_chars = 0
+    state.batch_current_tool_calls = 0
+    state.batch_last_file_stats_lines = []
+    _close_current_log_file(state)
     state.batch_running_path = f"输入={input_dir} | 输出={output_dir} | 配置={config}"
     state.batch_logs = [f"[启动] {state.batch_running_path}"]
     state.batch_log_cursor = 0
@@ -278,64 +348,97 @@ def _consume_batch_events(state: SessionState) -> None:
         etype = str(event.get("type", "")).strip()
         if etype == "batch_start":
             state.batch_total_files = int(event.get("total_files", 0))
-            state.batch_logs.append(f"[批处理] 总文件数={state.batch_total_files}")
+            _append_batch_log(state, f"[批处理] 总文件数={state.batch_total_files}")
             continue
         if etype == "file_start":
             state.batch_current_file = str(event.get("file", ""))
             state.batch_current_file_index = int(event.get("file_index", 0))
-            state.batch_logs.append(
-                f"[文件开始] {state.batch_current_file_index}/{int(event.get('total_files', 0))} {state.batch_current_file}"
+            state.batch_current_input_chars = 0
+            state.batch_current_output_chars = 0
+            state.batch_current_tool_calls = 0
+            _open_current_log_file(state, state.batch_current_file)
+            _append_batch_log(
+                state,
+                f"[文件开始] {state.batch_current_file_index}/{int(event.get('total_files', 0))} {state.batch_current_file}",
             )
+            if state.batch_current_log_path is not None:
+                _append_batch_log(state, f"[日志文件] {state.batch_current_log_path}")
             continue
         if etype == "asr_output":
-            state.batch_logs.append("[ASR输出]")
-            state.batch_logs.append(str(event.get("text", "")).strip() or "（空）")
+            _append_batch_log(state, "[ASR输出]")
+            _append_batch_log(state, str(event.get("text", "")).strip() or "（空）")
             continue
         if etype == "translation_group_start":
             state.batch_group_index = int(event.get("group_index", 0))
             state.batch_group_total = int(event.get("total_groups", 0))
-            state.batch_logs.append(f"[翻译分组] {state.batch_group_index}/{state.batch_group_total} 开始")
+            _append_batch_log(state, f"[翻译分组] {state.batch_group_index}/{state.batch_group_total} 开始")
             continue
         if etype == "llm_request":
             state.batch_last_request_json = str(event.get("json", ""))
-            state.batch_logs.append("[LLM请求]")
-            state.batch_logs.append(state.batch_last_request_json or "（空）")
+            _append_batch_log(state, "[LLM请求]")
+            _append_batch_log(state, state.batch_last_request_json or "（空）")
             continue
         if etype == "llm_response":
             state.batch_last_response_json = str(event.get("json", ""))
-            state.batch_logs.append("[LLM响应]")
-            state.batch_logs.append(state.batch_last_response_json or "（空）")
+            _append_batch_log(state, "[LLM响应]")
+            _append_batch_log(state, state.batch_last_response_json or "（空）")
+            continue
+        if etype == "llm_usage_chars":
+            state.batch_current_input_chars += int(event.get("input_chars", 0) or 0)
+            state.batch_current_output_chars += int(event.get("output_chars", 0) or 0)
             continue
         if etype == "llm_tool_call":
-            state.batch_logs.append("[LLM工具调用]")
+            state.batch_current_tool_calls += 1
+            _append_batch_log(state, "[LLM工具调用]")
             name = str(event.get("name", "")).strip()
             args = str(event.get("arguments", "")).strip()
-            state.batch_logs.append(f"name={name}" if name else "（无工具名）")
-            state.batch_logs.append(args or "（无参数）")
+            _append_batch_log(state, f"name={name}" if name else "（无工具名）")
+            _append_batch_log(state, args or "（无参数）")
             continue
         if etype == "llm_tool_result":
-            state.batch_logs.append("[LLM工具结果]")
-            state.batch_logs.append(str(event.get("json", "")).strip() or "（空）")
+            _append_batch_log(state, "[LLM工具结果]")
+            _append_batch_log(state, str(event.get("json", "")).strip() or "（空）")
             continue
         if etype == "llm_tool_error":
-            state.batch_logs.append("[LLM工具错误]")
+            _append_batch_log(state, "[LLM工具错误]")
             text = str(event.get("text", "")).strip()
             if text:
-                state.batch_logs.append(text)
+                _append_batch_log(state, text)
             continue
         if etype == "llm_cot":
-            state.batch_logs.append("[LLM思考]")
-            state.batch_logs.append(str(event.get("text", "")).strip() or "（空）")
+            _append_batch_log(state, "[LLM思考]")
+            _append_batch_log(state, str(event.get("text", "")).strip() or "（空）")
+            continue
+        if etype == "file_stats":
+            asr_sec = float(event.get("asr_sec", 0.0) or 0.0)
+            tr_sec = float(event.get("translate_sec", 0.0) or 0.0)
+            write_sec = float(event.get("write_sec", 0.0) or 0.0)
+            total_sec = float(event.get("total_sec", 0.0) or 0.0)
+            status = str(event.get("status", "")).strip() or "unknown"
+            lines = [
+                f"文件：{event.get('file', '')}",
+                f"状态：{status}",
+                f"输入字符数：{state.batch_current_input_chars}",
+                f"输出字符数：{state.batch_current_output_chars}",
+                f"工具调用次数：{state.batch_current_tool_calls}",
+                f"耗时：ASR {asr_sec:.2f}s | 翻译 {tr_sec:.2f}s | 写出 {write_sec:.2f}s | 总计 {total_sec:.2f}s",
+            ]
+            state.batch_last_file_stats_lines = lines
+            _append_batch_log(state, "[统计]")
+            for line in lines:
+                _append_batch_log(state, line)
             continue
         if etype == "file_end":
-            state.batch_logs.append(
+            _append_batch_log(
+                state,
                 f"[文件结束] {event.get('file', '')} | 状态={event.get('status', '')} | 输出={event.get('output', '')}"
             )
             lrc_output = str(event.get("lrc_output", "")).strip()
             if lrc_output:
-                state.batch_logs.append(f"[LRC输出] {lrc_output}")
+                _append_batch_log(state, f"[LRC输出] {lrc_output}")
             if event.get("error"):
-                state.batch_logs.append(f"[文件错误] {event.get('error')}")
+                _append_batch_log(state, f"[文件错误] {event.get('error')}")
+            _close_current_log_file(state)
             continue
         if etype == "worker_done":
             state.batch_running = False
@@ -348,7 +451,11 @@ def _consume_batch_events(state: SessionState) -> None:
                 f"总文件数：{state.batch_total_files}",
                 f"最后处理文件：{state.batch_current_file or '（无）'}",
             ]
-            state.batch_logs.append(f"[结束] 状态={status} 退出码={state.batch_result_rc}")
+            if state.batch_last_file_stats_lines:
+                state.batch_summary_lines.append("当前文件统计：")
+                state.batch_summary_lines.extend(state.batch_last_file_stats_lines)
+            _append_batch_log(state, f"[结束] 状态={status} 退出码={state.batch_result_rc}")
+            _close_current_log_file(state)
             continue
         if etype == "worker_error":
             state.batch_running = False
@@ -361,7 +468,8 @@ def _consume_batch_events(state: SessionState) -> None:
                 f"总文件数：{state.batch_total_files}",
                 f"最后处理文件：{state.batch_current_file or '（无）'}",
             ]
-            state.batch_logs.append(f"[异常] {state.batch_error}")
+            _append_batch_log(state, f"[异常] {state.batch_error}")
+            _close_current_log_file(state)
             continue
 
 
@@ -1034,7 +1142,7 @@ def _render_processing_page(state: SessionState) -> Page:
             if key == "esc":
                 if not state.batch_requested_cancel and state.batch_cancel_token is not None:
                     state.batch_requested_cancel = True
-                    state.batch_logs.append("[操作] 已请求取消，等待当前步骤结束")
+                    _append_batch_log(state, "[操作] 已请求取消，等待当前步骤结束")
                     try:
                         cancel = getattr(state.batch_cancel_token, "cancel", None)
                         if callable(cancel):
@@ -1139,41 +1247,44 @@ def run_interactive_menu() -> int:
         state.output_dir = Path("output")
     page: Page | None = Page.MAIN
 
-    while page is not None:
-        _clear_screen()
-        if page == Page.MAIN:
-            page = _render_main_page()
-            continue
-        if page == Page.BATCH:
-            page = _render_batch_page(state)
-            continue
-        if page == Page.PROCESSING:
-            page = _render_processing_page(state)
-            continue
-        if page == Page.CONFIG:
-            page = _render_config_page(state)
-            continue
-        if page == Page.CHECK:
-            page = _render_check_page(state)
-            continue
-        if page == Page.API_TEST:
-            page = _render_api_test_page(state)
-            continue
-        if page == Page.CONFIG_EDIT_MENU:
-            page = _render_config_edit_menu_page(state)
-            continue
-        if page == Page.CONFIG_EDIT_FIELDS:
-            page = _render_config_edit_fields_page(state)
-            continue
-        if page == Page.CONFIG_EDIT_LLM:
-            page = _render_config_edit_llm_page(state)
-            continue
-        if page == Page.HELP:
-            page = _render_help_page()
-            continue
-        if page == Page.INFO:
-            page = _render_info_page(state)
-            continue
+    try:
+        while page is not None:
+            _clear_screen()
+            if page == Page.MAIN:
+                page = _render_main_page()
+                continue
+            if page == Page.BATCH:
+                page = _render_batch_page(state)
+                continue
+            if page == Page.PROCESSING:
+                page = _render_processing_page(state)
+                continue
+            if page == Page.CONFIG:
+                page = _render_config_page(state)
+                continue
+            if page == Page.CHECK:
+                page = _render_check_page(state)
+                continue
+            if page == Page.API_TEST:
+                page = _render_api_test_page(state)
+                continue
+            if page == Page.CONFIG_EDIT_MENU:
+                page = _render_config_edit_menu_page(state)
+                continue
+            if page == Page.CONFIG_EDIT_FIELDS:
+                page = _render_config_edit_fields_page(state)
+                continue
+            if page == Page.CONFIG_EDIT_LLM:
+                page = _render_config_edit_llm_page(state)
+                continue
+            if page == Page.HELP:
+                page = _render_help_page()
+                continue
+            if page == Page.INFO:
+                page = _render_info_page(state)
+                continue
+    finally:
+        _close_current_log_file(state)
 
     return 0
 
