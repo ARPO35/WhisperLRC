@@ -44,13 +44,17 @@ python main.py
 
 提示词与翻译偏好从上述路径读取。若配置相对路径，则按项目根目录解析：
 
-- `prompt.txt`：系统提示词模板。必须包含 `{input}`，可使用 `{perf}` 插入偏好字典。
+- `prompt.txt`：系统提示词模板。可使用 `{perf}` 插入偏好字典；`{input}` 为可选兼容占位，不再承载实际输入内容。
 - `preferences.txt`：每行一条偏好。
 - 术语语法：`src => tgt` 或 `src => tgt | note`
 - 说明语法：`note: 文本`
 - 注释语法：`# ...`
 
 LLM 必须返回 JSON，格式要求如下（`terms` 可选）：
+
+请求消息规则：
+- `role=system`：来自 `prompt.txt`（以及语言、输出约束等规则）。
+- `role=user`：仅放输入内容 `{input}`（包含需翻译句子与上下文 JSON）。
 
 ```json
 {

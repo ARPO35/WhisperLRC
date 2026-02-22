@@ -1207,6 +1207,7 @@ def _render_help_page() -> Page:
     print("- 信息结果以单独页面展示，Esc 关闭")
     print("- 提示词和翻译偏好文件路径可在配置中设置")
     print("- 在 prompt.txt 中可使用 {perf} 插入偏好字典")
+    print("- role=user 只发送 {input}，prompt.txt 不再强制包含 {input}")
     print("- 检查页面支持 API 测试")
     print("- 检查页面支持从 JSON 导出 LRC")
     print()

@@ -134,11 +134,10 @@ class LLMTranslator(Translator):
                 system_prompt = self._build_system_prompt(
                     src=src,
                     tgt=tgt,
-                    input_payload=input_payload,
                 )
                 raw = self._request_chat_completion_with_tools(
                     system_prompt,
-                    "可按需调用工具修正识别，再最终仅返回 JSON。",
+                    input_payload,
                     event_cb=event_cb,
                     request_meta={
                         "group_index": group_index,
@@ -350,7 +349,7 @@ class LLMTranslator(Translator):
                     tools_enabled = False
                     messages = [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": "请仅返回 JSON。"},
+                        {"role": "user", "content": user_prompt},
                     ]
                     continue
                 raise
@@ -525,16 +524,15 @@ class LLMTranslator(Translator):
                 return obj
         return json.dumps(obj, ensure_ascii=False, indent=2)
 
-    def _build_system_prompt(self, *, src: str, tgt: str, input_payload: str) -> str:
+    def _build_system_prompt(self, *, src: str, tgt: str) -> str:
         perf_text = self._render_perf_block()
         prompt = self._prompt_template
         if "{perf}" in prompt:
             prompt = prompt.replace("{perf}", perf_text)
         else:
             prompt = prompt.rstrip() + "\n\n当前翻译偏好：\n" + perf_text
-        if "{input}" not in prompt:
-            raise RuntimeError("prompt.txt 缺少 {input} 占位符")
-        prompt = prompt.replace("{input}", input_payload)
+        if "{input}" in prompt:
+            prompt = prompt.replace("{input}", "[输入内容由 user 消息提供]")
 
         lines = [
             prompt,
