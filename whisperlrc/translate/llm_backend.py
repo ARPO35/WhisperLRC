@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib import error, request
 
 from whisperlrc.config import TranslationConfig
@@ -28,15 +28,33 @@ class LLMTranslator(Translator):
         src: str = "ja",
         tgt: str = "zh-Hans",
         retry: int = 0,
+        event_cb: Callable[[dict[str, Any]], None] | None = None,
+        cancel_token: Any | None = None,
     ) -> list[str]:
         if not texts:
             return []
         self._validate_runtime_config()
 
         batch_size = max(1, int(self.cfg.llm_batch_size))
+        total_groups = (len(texts) + batch_size - 1) // batch_size
         out: list[str] = []
         for group_start in range(0, len(texts), batch_size):
+            if self._is_cancelled(cancel_token):
+                raise RuntimeError("用户取消处理")
+
             group_texts = texts[group_start : group_start + batch_size]
+            group_index = (group_start // batch_size) + 1
+            self._emit_event(
+                event_cb,
+                {
+                    "type": "translation_group_start",
+                    "group_index": group_index,
+                    "total_groups": total_groups,
+                    "group_start": group_start,
+                    "group_size": len(group_texts),
+                },
+            )
+
             translated = self._translate_group_with_retry(
                 all_texts=texts,
                 group_texts=group_texts,
@@ -44,8 +62,23 @@ class LLMTranslator(Translator):
                 src=src,
                 tgt=tgt,
                 retry=retry,
+                event_cb=event_cb,
+                cancel_token=cancel_token,
+                group_index=group_index,
+                total_groups=total_groups,
             )
             out.extend(translated)
+            self._emit_event(
+                event_cb,
+                {
+                    "type": "translation_group_end",
+                    "group_index": group_index,
+                    "total_groups": total_groups,
+                    "group_start": group_start,
+                    "group_size": len(group_texts),
+                    "status": "ok",
+                },
+            )
         return out
 
     def test_api_hello(self) -> str:
@@ -68,10 +101,16 @@ class LLMTranslator(Translator):
         src: str,
         tgt: str,
         retry: int,
+        event_cb: Callable[[dict[str, Any]], None] | None = None,
+        cancel_token: Any | None = None,
+        group_index: int,
+        total_groups: int,
     ) -> list[str]:
         max_attempts = max(1, retry + 1)
         last_err: Exception | None = None
         for attempt in range(1, max_attempts + 1):
+            if self._is_cancelled(cancel_token):
+                raise RuntimeError("用户取消处理")
             try:
                 input_payload = self._build_input_payload(
                     all_texts=all_texts,
@@ -85,7 +124,21 @@ class LLMTranslator(Translator):
                     tgt=tgt,
                     input_payload=input_payload,
                 )
-                raw = self._request_chat_completion(system_prompt, "请仅返回 JSON。")
+                raw = self._request_chat_completion(
+                    system_prompt,
+                    "请仅返回 JSON。",
+                    event_cb=event_cb,
+                    request_meta={
+                        "group_index": group_index,
+                        "total_groups": total_groups,
+                        "group_start": group_start,
+                        "group_size": len(group_texts),
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                    },
+                )
+                if self._is_cancelled(cancel_token):
+                    raise RuntimeError("用户取消处理")
                 translations, terms = self._parse_json_response(raw, expected_count=len(group_texts))
                 self._merge_terms(terms)
                 return translations
@@ -119,7 +172,14 @@ class LLMTranslator(Translator):
             return f"{base}/chat/completions"
         return f"{base}/v1/chat/completions"
 
-    def _request_chat_completion(self, system_prompt: str, user_prompt: str) -> str:
+    def _request_chat_completion(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        event_cb: Callable[[dict[str, Any]], None] | None = None,
+        request_meta: dict[str, Any] | None = None,
+    ) -> str:
         url = self._normalize_chat_url()
         req_payload = {
             "model": self.cfg.llm_model,
@@ -129,6 +189,15 @@ class LLMTranslator(Translator):
                 {"role": "user", "content": user_prompt},
             ],
         }
+        self._emit_event(
+            event_cb,
+            {
+                "type": "llm_request",
+                "url": url,
+                "json": self._safe_json_dump(req_payload),
+                "meta": request_meta or {},
+            },
+        )
         req = request.Request(
             url=url,
             data=json.dumps(req_payload).encode("utf-8"),
@@ -151,6 +220,16 @@ class LLMTranslator(Translator):
         except error.URLError as e:
             raise RuntimeError(f"LLM 网络请求失败：{e}") from e
 
+        self._emit_event(
+            event_cb,
+            {
+                "type": "llm_response",
+                "url": url,
+                "json": self._safe_json_dump(body),
+                "meta": request_meta or {},
+            },
+        )
+
         try:
             data = json.loads(body)
             content = data["choices"][0]["message"]["content"]
@@ -160,6 +239,34 @@ class LLMTranslator(Translator):
         if not isinstance(content, str):
             raise RuntimeError("LLM 返回内容格式异常：message.content 不是字符串")
         return content
+
+    def _emit_event(self, event_cb: Callable[[dict[str, Any]], None] | None, payload: dict[str, Any]) -> None:
+        if event_cb is None:
+            return
+        try:
+            event_cb(payload)
+        except Exception:
+            pass
+
+    def _is_cancelled(self, cancel_token: Any | None) -> bool:
+        if cancel_token is None:
+            return False
+        checker = getattr(cancel_token, "is_cancelled", None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                return False
+        return bool(getattr(cancel_token, "cancelled", False))
+
+    def _safe_json_dump(self, obj: Any) -> str:
+        if isinstance(obj, str):
+            try:
+                parsed = json.loads(obj)
+                return json.dumps(parsed, ensure_ascii=False, indent=2)
+            except Exception:
+                return obj
+        return json.dumps(obj, ensure_ascii=False, indent=2)
 
     def _build_system_prompt(self, *, src: str, tgt: str, input_payload: str) -> str:
         perf_text = self._render_perf_block()

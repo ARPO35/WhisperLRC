@@ -2,12 +2,23 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from whisperlrc.config import AppConfig
 from whisperlrc.output.review_json_writer import write_review_json
 from whisperlrc.translate.factory import build_translator
 from whisperlrc.types import FileProcessResult, SentenceItem
+
+
+class CancelToken:
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def is_cancelled(self) -> bool:
+        return self.cancelled
 
 
 def _iter_audio_files(input_dir: Path, exts: list[str]) -> list[Path]:
@@ -25,6 +36,8 @@ def _translate_sentences(
     sentences: list[SentenceItem],
     cfg: AppConfig,
     retry: int,
+    event_cb: Callable[[dict[str, Any]], None] | None = None,
+    cancel_token: CancelToken | None = None,
 ) -> tuple[list[SentenceItem], str | None]:
     translator = build_translator(cfg.translation)
     ja_lines = [s.ja_text for s in sentences]
@@ -33,6 +46,8 @@ def _translate_sentences(
         src="ja",
         tgt=cfg.translation.target,
         retry=retry,
+        event_cb=event_cb,
+        cancel_token=cancel_token,
     )
     if len(zh_lines) != len(sentences):
         return sentences, "翻译结果数量与句子数量不一致"
@@ -61,10 +76,33 @@ def _mark_translation_failed(sentences: list[SentenceItem]) -> list[SentenceItem
     return sentences
 
 
-def process_batch(input_dir: Path, output_dir: Path, cfg: AppConfig) -> int:
+def process_batch(
+    input_dir: Path,
+    output_dir: Path,
+    cfg: AppConfig,
+    event_cb: Callable[[dict[str, Any]], None] | None = None,
+    cancel_token: CancelToken | None = None,
+) -> int:
+    def emit(event: dict[str, Any]) -> None:
+        if event_cb is None:
+            return
+        try:
+            event_cb(event)
+        except Exception:
+            pass
+
     audio_files = _iter_audio_files(input_dir, cfg.pipeline.input_formats)
+    emit(
+        {
+            "type": "batch_start",
+            "total_files": len(audio_files),
+            "input_dir": str(input_dir),
+            "output_dir": str(output_dir),
+        }
+    )
     if not audio_files:
         logging.warning("在目录 %s 中未找到可处理的音频文件", input_dir)
+        emit({"type": "batch_end", "ok": 0, "failed": 0, "total_files": 0, "cancelled": False, "rc": 0})
         return 0
 
     from whisperlrc.asr.faster_whisper_engine import FasterWhisperEngine
@@ -72,7 +110,39 @@ def process_batch(input_dir: Path, output_dir: Path, cfg: AppConfig) -> int:
     asr_engine = FasterWhisperEngine(cfg.asr)
     ok = 0
     failed = 0
-    for audio_file in audio_files:
+    total = len(audio_files)
+    for idx, audio_file in enumerate(audio_files, start=1):
+        if cancel_token is not None and cancel_token.is_cancelled():
+            logging.warning("检测到取消请求，停止批处理。")
+            emit(
+                {
+                    "type": "cancelled",
+                    "stage": "before_file",
+                    "current_file_index": idx,
+                    "total_files": total,
+                    "file": audio_file.name,
+                }
+            )
+            emit(
+                {
+                    "type": "batch_end",
+                    "ok": ok,
+                    "failed": failed,
+                    "total_files": total,
+                    "cancelled": True,
+                    "rc": 2,
+                }
+            )
+            return 2
+
+        emit(
+            {
+                "type": "file_start",
+                "file_index": idx,
+                "total_files": total,
+                "file": audio_file.name,
+            }
+        )
         logging.info("开始处理：%s", audio_file.name)
         run_output, asr_err = _run_asr_with_retry(audio_file, asr_engine, cfg.pipeline.retry_asr)
         if run_output is None:
@@ -87,6 +157,17 @@ def process_batch(input_dir: Path, output_dir: Path, cfg: AppConfig) -> int:
             )
             logging.error("ASR 失败，已写入失败 JSON：%s", out)
             failed += 1
+            emit(
+                {
+                    "type": "file_end",
+                    "file_index": idx,
+                    "total_files": total,
+                    "file": audio_file.name,
+                    "status": "failed",
+                    "output": str(out),
+                    "error": asr_err or "",
+                }
+            )
             continue
 
         try:
@@ -94,6 +175,8 @@ def process_batch(input_dir: Path, output_dir: Path, cfg: AppConfig) -> int:
                 run_output.sentences,
                 cfg,
                 cfg.pipeline.retry_translate,
+                event_cb=event_cb,
+                cancel_token=cancel_token,
             )
             if tr_err is not None:
                 raise RuntimeError(tr_err)
@@ -112,6 +195,27 @@ def process_batch(input_dir: Path, output_dir: Path, cfg: AppConfig) -> int:
             )
             logging.error("已写入失败 JSON：%s", out)
             logging.error("由于翻译错误，批处理提前终止。")
+            emit(
+                {
+                    "type": "file_end",
+                    "file_index": idx,
+                    "total_files": total,
+                    "file": audio_file.name,
+                    "status": "failed",
+                    "output": str(out),
+                    "error": err_msg,
+                }
+            )
+            emit(
+                {
+                    "type": "batch_end",
+                    "ok": ok,
+                    "failed": failed + 1,
+                    "total_files": total,
+                    "cancelled": bool(cancel_token and cancel_token.is_cancelled()),
+                    "rc": 2,
+                }
+            )
             return 2
 
         result = FileProcessResult(status="ok", sentences=sentences, error=tr_err, logs=[])
@@ -125,6 +229,26 @@ def process_batch(input_dir: Path, output_dir: Path, cfg: AppConfig) -> int:
         )
         ok += 1
         logging.info("处理完成：%s", out)
+        emit(
+            {
+                "type": "file_end",
+                "file_index": idx,
+                "total_files": total,
+                "file": audio_file.name,
+                "status": "ok",
+                "output": str(out),
+            }
+        )
 
-    logging.info("批处理结束 | 成功=%d 失败=%d 总数=%d", ok, failed, len(audio_files))
+    logging.info("批处理结束 | 成功=%d 失败=%d 总数=%d", ok, failed, total)
+    emit(
+        {
+            "type": "batch_end",
+            "ok": ok,
+            "failed": failed,
+            "total_files": total,
+            "cancelled": bool(cancel_token and cancel_token.is_cancelled()),
+            "rc": 0 if failed == 0 else 2,
+        }
+    )
     return 0 if failed == 0 else 2

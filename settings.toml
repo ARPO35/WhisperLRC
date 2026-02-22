@@ -24,10 +24,10 @@ llm_context_window = 5
 timeout_sec = 30
 
 [output]
-default_input_dir = "t/input"
+default_input_dir = "t\\RJ01263522"
 default_output_dir = "t/output"
 json_ext = ".json"
-write_lrc = false
+write_lrc = true
 
 [schema]
 version = "1.0"

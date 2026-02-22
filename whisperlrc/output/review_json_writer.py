@@ -24,7 +24,9 @@ def _ensure_unique_json_path(output_dir: Path, basename: str, ext: str) -> Path:
 
 
 def _sentence_to_dict(sentence: SentenceItem) -> dict[str, Any]:
-    return asdict(sentence)
+    sentence_dict = asdict(sentence)
+    sentence_dict.pop("token_items", None)
+    return sentence_dict
 
 
 def write_review_json(

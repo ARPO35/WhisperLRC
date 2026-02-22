@@ -17,6 +17,7 @@ from whisperlrc.logging import setup_logging
 class Page(Enum):
     MAIN = auto()
     BATCH = auto()
+    PROCESSING = auto()
     CONFIG = auto()
     CHECK = auto()
     HELP = auto()
@@ -44,6 +45,23 @@ class SessionState:
     api_test_running: bool = False
     api_test_result_lines: list[str] = field(default_factory=list)
     api_test_queue: queue.Queue[tuple[bool, list[str]]] | None = None
+    batch_running: bool = False
+    batch_finished: bool = False
+    batch_requested_cancel: bool = False
+    batch_result_rc: int = 0
+    batch_error: str = ""
+    batch_summary_lines: list[str] = field(default_factory=list)
+    batch_task_queue: queue.Queue[dict[str, Any]] | None = None
+    batch_worker: threading.Thread | None = None
+    batch_cancel_token: Any | None = None
+    batch_total_files: int = 0
+    batch_current_file: str = ""
+    batch_current_file_index: int = 0
+    batch_group_index: int = 0
+    batch_group_total: int = 0
+    batch_last_request_json: str = ""
+    batch_last_response_json: str = ""
+    batch_running_path: str = ""
 
 
 @dataclass
@@ -187,6 +205,114 @@ def _run_batch(
     if not input_dir.exists() or not input_dir.is_dir():
         raise ValueError(f"输入目录不存在：{input_dir}")
     return process_batch(input_dir, output_dir, cfg)
+
+
+def _start_batch_task(
+    state: SessionState,
+    *,
+    input_dir: Path,
+    output_dir: Path,
+    config: Path,
+) -> None:
+    from whisperlrc.pipeline import CancelToken, process_batch
+
+    task_q: queue.Queue[dict[str, Any]] = queue.Queue()
+    cancel_token = CancelToken()
+    state.batch_task_queue = task_q
+    state.batch_cancel_token = cancel_token
+    state.batch_running = True
+    state.batch_finished = False
+    state.batch_requested_cancel = False
+    state.batch_result_rc = 0
+    state.batch_error = ""
+    state.batch_summary_lines = []
+    state.batch_total_files = 0
+    state.batch_current_file = ""
+    state.batch_current_file_index = 0
+    state.batch_group_index = 0
+    state.batch_group_total = 0
+    state.batch_last_request_json = ""
+    state.batch_last_response_json = ""
+    state.batch_running_path = f"输入={input_dir} | 输出={output_dir} | 配置={config}"
+
+    def emit(event: dict[str, Any]) -> None:
+        task_q.put(event)
+
+    def worker() -> None:
+        try:
+            setup_logging("INFO")
+            cfg = load_config(config)
+            if not input_dir.exists() or not input_dir.is_dir():
+                raise ValueError(f"输入目录不存在：{input_dir}")
+            rc = process_batch(
+                input_dir,
+                output_dir,
+                cfg,
+                event_cb=emit,
+                cancel_token=cancel_token,
+            )
+            task_q.put({"type": "worker_done", "rc": rc})
+        except Exception as e:
+            task_q.put({"type": "worker_error", "error": str(e)})
+
+    t = threading.Thread(target=worker, daemon=True)
+    state.batch_worker = t
+    t.start()
+
+
+def _consume_batch_events(state: SessionState) -> None:
+    if state.batch_task_queue is None:
+        return
+    while True:
+        try:
+            event = state.batch_task_queue.get_nowait()
+        except queue.Empty:
+            return
+
+        etype = str(event.get("type", "")).strip()
+        if etype == "batch_start":
+            state.batch_total_files = int(event.get("total_files", 0))
+            continue
+        if etype == "file_start":
+            state.batch_current_file = str(event.get("file", ""))
+            state.batch_current_file_index = int(event.get("file_index", 0))
+            state.batch_group_index = 0
+            state.batch_group_total = 0
+            continue
+        if etype == "translation_group_start":
+            state.batch_group_index = int(event.get("group_index", 0))
+            state.batch_group_total = int(event.get("total_groups", 0))
+            continue
+        if etype == "llm_request":
+            state.batch_last_request_json = str(event.get("json", ""))
+            continue
+        if etype == "llm_response":
+            state.batch_last_response_json = str(event.get("json", ""))
+            continue
+        if etype == "worker_done":
+            state.batch_running = False
+            state.batch_finished = True
+            state.batch_result_rc = int(event.get("rc", 2))
+            status = "已取消" if state.batch_requested_cancel else "已完成"
+            state.batch_summary_lines = [
+                f"状态：{status}",
+                f"退出码：{state.batch_result_rc}",
+                f"总文件数：{state.batch_total_files}",
+                f"最后处理文件：{state.batch_current_file or '（无）'}",
+            ]
+            continue
+        if etype == "worker_error":
+            state.batch_running = False
+            state.batch_finished = True
+            state.batch_result_rc = 2
+            state.batch_error = str(event.get("error", "未知错误"))
+            state.batch_summary_lines = [
+                "状态：失败",
+                f"错误：{state.batch_error}",
+                f"总文件数：{state.batch_total_files}",
+                f"最后处理文件：{state.batch_current_file or '（无）'}",
+            ]
+            continue
 
 
 def _build_config_summary(config: Path) -> list[str]:
@@ -373,6 +499,10 @@ def _render_main_page() -> Page | None:
 
 
 def _render_batch_page(state: SessionState) -> Page:
+    _consume_batch_events(state)
+    if state.batch_running:
+        return Page.PROCESSING
+
     _print_path_bar("主菜单->批处理")
     print("批处理页面")
     print("==========")
@@ -394,15 +524,13 @@ def _render_batch_page(state: SessionState) -> Page:
             return Page.MAIN
         if confirm != "y":
             return _show_info(state, "执行结果", ["已取消执行。"], Page.BATCH, "主菜单->批处理->执行结果")
-        try:
-            rc = _run_batch(
-                input_dir=state.input_dir,
-                output_dir=state.output_dir,
-                config=state.config_path,
-            )
-            return _show_info(state, "执行结果", [f"处理完成，退出码：{rc}"], Page.BATCH, "主菜单->批处理->执行结果")
-        except Exception as e:
-            return _show_info(state, "执行结果", [f"处理失败：{e}"], Page.BATCH, "主菜单->批处理->执行结果")
+        _start_batch_task(
+            state,
+            input_dir=state.input_dir,
+            output_dir=state.output_dir,
+            config=state.config_path,
+        )
+        return Page.PROCESSING
 
     if key == "2":
         input_res = _read_line_with_cancel("输入目录", str(state.input_dir))
@@ -428,15 +556,13 @@ def _render_batch_page(state: SessionState) -> Page:
             return Page.MAIN
         if confirm != "y":
             return _show_info(state, "执行结果", ["已取消执行。"], Page.BATCH, "主菜单->批处理->执行结果")
-        try:
-            rc = _run_batch(
-                input_dir=Path(input_res.value),
-                output_dir=Path(output_res.value),
-                config=Path(config_res.value),
-            )
-            return _show_info(state, "执行结果", [f"处理完成，退出码：{rc}"], Page.BATCH, "主菜单->批处理->执行结果")
-        except Exception as e:
-            return _show_info(state, "执行结果", [f"处理失败：{e}"], Page.BATCH, "主菜单->批处理->执行结果")
+        _start_batch_task(
+            state,
+            input_dir=Path(input_res.value),
+            output_dir=Path(output_res.value),
+            config=Path(config_res.value),
+        )
+        return Page.PROCESSING
 
     if key == "3":
         lines = [
@@ -795,6 +921,73 @@ def _render_config_edit_llm_page(state: SessionState) -> Page:
     return Page.CONFIG_EDIT_LLM
 
 
+def _render_processing_page(state: SessionState) -> Page:
+    while True:
+        _clear_screen()
+        _print_path_bar("主菜单->批处理->处理中")
+        _consume_batch_events(state)
+
+        print("处理页面")
+        print("========")
+        print(state.batch_running_path or "（未设置）")
+        print()
+        if state.batch_running:
+            status = "运行中"
+            if state.batch_requested_cancel:
+                status = "已请求取消，等待当前步骤结束"
+            print(f"状态：{status}")
+        else:
+            print("状态：已结束")
+
+        total = state.batch_total_files
+        current_idx = state.batch_current_file_index
+        if total > 0:
+            print(f"文件进度：{current_idx}/{total}")
+        else:
+            print("文件进度：0/0")
+        print(f"当前文件：{state.batch_current_file or '（无）'}")
+
+        if state.batch_group_total > 0:
+            print(f"翻译分组：{state.batch_group_index}/{state.batch_group_total}")
+        else:
+            print("翻译分组：0/0")
+        print()
+
+        print("最近一次请求 JSON：")
+        print("------------------")
+        print(state.batch_last_request_json or "（暂无）")
+        print()
+        print("最近一次响应 JSON：")
+        print("------------------")
+        print(state.batch_last_response_json or "（暂无）")
+        print()
+
+        if state.batch_running:
+            print("Esc 取消并返回")
+            key = _read_key_nonblocking()
+            if key == "esc":
+                if not state.batch_requested_cancel and state.batch_cancel_token is not None:
+                    state.batch_requested_cancel = True
+                    try:
+                        cancel = getattr(state.batch_cancel_token, "cancel", None)
+                        if callable(cancel):
+                            cancel()
+                    except Exception:
+                        pass
+                return Page.BATCH
+            if key == "q":
+                return Page.MAIN
+            time.sleep(0.08)
+            continue
+
+        lines = state.batch_summary_lines or [
+            f"状态：{'已取消' if state.batch_requested_cancel else '已完成'}",
+            f"退出码：{state.batch_result_rc}",
+        ]
+        state.batch_finished = False
+        return _show_info(state, "执行结果", lines, Page.BATCH, "主菜单->批处理->执行结果")
+
+
 def _render_api_test_page(state: SessionState) -> Page:
     while True:
         _clear_screen()
@@ -884,6 +1077,9 @@ def run_interactive_menu() -> int:
             continue
         if page == Page.BATCH:
             page = _render_batch_page(state)
+            continue
+        if page == Page.PROCESSING:
+            page = _render_processing_page(state)
             continue
         if page == Page.CONFIG:
             page = _render_config_page(state)
