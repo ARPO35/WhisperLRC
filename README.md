@@ -1,12 +1,12 @@
 # WhisperLRC
 
 第一阶段本地程序，用于批量 ASR 处理与审核 JSON 导出。
-翻译功能已支持 OpenAI 兼容接口（YAML 返回协议）。
+翻译功能已支持 OpenAI 兼容接口（JSON 返回协议）。
 
 ## 快速开始
 
 ```bash
-pip install faster-whisper tomli pyyaml
+pip install faster-whisper tomli
 python main.py
 ```
 
@@ -44,22 +44,23 @@ python main.py
 
 提示词与翻译偏好从上述路径读取。若配置相对路径，则按项目根目录解析：
 
-- `prompt.txt`：系统提示词模板。可使用 `{perf}` 占位符插入偏好字典。
+- `prompt.txt`：系统提示词模板。必须包含 `{input}`，可使用 `{perf}` 插入偏好字典。
 - `preferences.txt`：每行一条偏好。
 - 术语语法：`src => tgt` 或 `src => tgt | note`
 - 说明语法：`note: 文本`
 - 注释语法：`# ...`
 
-LLM 必须返回 YAML，格式要求如下（`terms` 可选）：
+LLM 必须返回 JSON，格式要求如下（`terms` 可选）：
 
-```yaml
-translations:
-  - index: 0
-    text: 翻译结果
-terms:
-  - src: 原文术语
-    tgt: 译文术语
-    note: 说明
+```json
+{
+  "translations": [
+    { "index": 0, "text": "翻译结果" }
+  ],
+  "terms": [
+    { "src": "原文术语", "tgt": "译文术语", "note": "说明" }
+  ]
+}
 ```
 
 程序会把 `terms` 作为会话内术语词典增量合并，仅在当前批处理中生效，不会写回磁盘。

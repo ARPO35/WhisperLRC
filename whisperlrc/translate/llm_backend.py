@@ -73,16 +73,20 @@ class LLMTranslator(Translator):
         last_err: Exception | None = None
         for attempt in range(1, max_attempts + 1):
             try:
-                payload_text = self._build_user_prompt(
+                input_payload = self._build_input_payload(
                     all_texts=all_texts,
                     group_texts=group_texts,
                     group_start=group_start,
                     src=src,
                     tgt=tgt,
                 )
-                system_prompt = self._build_system_prompt(src=src, tgt=tgt)
-                raw = self._request_chat_completion(system_prompt, payload_text)
-                translations, terms = self._parse_yaml_response(raw, expected_count=len(group_texts))
+                system_prompt = self._build_system_prompt(
+                    src=src,
+                    tgt=tgt,
+                    input_payload=input_payload,
+                )
+                raw = self._request_chat_completion(system_prompt, "请仅返回 JSON。")
+                translations, terms = self._parse_json_response(raw, expected_count=len(group_texts))
                 self._merge_terms(terms)
                 return translations
             except Exception as e:
@@ -157,31 +161,28 @@ class LLMTranslator(Translator):
             raise RuntimeError("LLM 返回内容格式异常：message.content 不是字符串")
         return content
 
-    def _build_system_prompt(self, *, src: str, tgt: str) -> str:
+    def _build_system_prompt(self, *, src: str, tgt: str, input_payload: str) -> str:
         perf_text = self._render_perf_block()
         prompt = self._prompt_template
         if "{perf}" in prompt:
             prompt = prompt.replace("{perf}", perf_text)
         else:
             prompt = prompt.rstrip() + "\n\n当前翻译偏好：\n" + perf_text
+        if "{input}" not in prompt:
+            raise RuntimeError("prompt.txt 缺少 {input} 占位符")
+        prompt = prompt.replace("{input}", input_payload)
 
         lines = [
             prompt,
             f"源语言：{src}",
             f"目标语言：{tgt}",
-            "输出要求：必须只输出 YAML，不能包含 Markdown 代码块或解释文字。",
+            "输出要求：必须只输出 JSON，不能包含 Markdown 代码块或解释文字。",
             "输出结构：",
-            "translations:",
-            "  - index: 0",
-            "    text: 翻译结果",
-            "terms:  # 可选",
-            "  - src: 原文术语",
-            "    tgt: 译文术语",
-            "    note: 说明（可选）",
+            '{ "translations":[{"index":0,"text":"翻译结果"}], "terms":[{"src":"原文术语","tgt":"译文术语","note":"可选说明"}] }',
         ]
         return "\n".join(lines)
 
-    def _build_user_prompt(
+    def _build_input_payload(
         self,
         *,
         all_texts: list[str],
@@ -210,33 +211,28 @@ class LLMTranslator(Translator):
         return (
             f"请将以下句子从 {src} 翻译到 {tgt}。\n"
             "上下文只用于理解语义，不需要翻译上下文本身。\n"
-            "请按 index 顺序返回 translations；terms 为可选字段。\n"
+            "请按 index 返回每条翻译。\n"
             "输入数据（JSON）：\n"
             f"{payload}"
         )
 
-    def _parse_yaml_response(
+    def _parse_json_response(
         self,
         content: str,
         *,
         expected_count: int,
     ) -> tuple[list[str], list[dict[str, str]]]:
-        try:
-            import yaml  # type: ignore
-        except ModuleNotFoundError as e:
-            raise RuntimeError("缺少依赖 PyYAML，请先执行：pip install pyyaml") from e
-
         normalized = self._strip_markdown_fence(content)
         try:
-            data = yaml.safe_load(normalized)
+            data = json.loads(normalized)
         except Exception as e:
-            raise RuntimeError(f"YAML 解析失败：{e}") from e
+            raise RuntimeError(f"JSON 解析失败：{e}") from e
         if not isinstance(data, dict):
-            raise RuntimeError("YAML 顶层必须是对象")
+            raise RuntimeError("JSON 顶层必须是对象")
 
         raw_translations = data.get("translations")
         if not isinstance(raw_translations, list):
-            raise RuntimeError("YAML 缺少 translations 列表")
+            raise RuntimeError("JSON 缺少 translations 列表")
 
         result: list[str | None] = [None] * expected_count
         for item in raw_translations:
