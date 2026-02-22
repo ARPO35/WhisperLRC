@@ -1,6 +1,4 @@
 __pycache__/
 *.py[cod]
 
-t/input/
-t/output/
 t/

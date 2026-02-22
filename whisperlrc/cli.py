@@ -63,6 +63,8 @@ class SessionState:
     batch_last_response_json: str = ""
     batch_running_path: str = ""
     batch_logs: list[str] = field(default_factory=list)
+    batch_log_cursor: int = 0
+    batch_processing_header_printed: bool = False
 
 
 @dataclass
@@ -236,6 +238,8 @@ def _start_batch_task(
     state.batch_last_response_json = ""
     state.batch_running_path = f"输入={input_dir} | 输出={output_dir} | 配置={config}"
     state.batch_logs = [f"[启动] {state.batch_running_path}"]
+    state.batch_log_cursor = 0
+    state.batch_processing_header_printed = False
 
     def emit(event: dict[str, Any]) -> None:
         task_q.put(event)
@@ -948,32 +952,29 @@ def _render_config_edit_llm_page(state: SessionState) -> Page:
 
 
 def _render_processing_page(state: SessionState) -> Page:
-    while True:
-        _clear_screen()
+    if not state.batch_processing_header_printed:
         _print_path_bar("主菜单->批处理->处理中")
-        _consume_batch_events(state)
-
         print("处理页面")
         print("========")
         print(state.batch_running_path or "（未设置）")
+        print("日志正在滚动输出，Esc 取消并返回，q 返回主菜单")
         print()
-        if state.batch_requested_cancel and state.batch_running:
-            print("状态：已请求取消，等待当前步骤结束")
-            print()
+        state.batch_processing_header_printed = True
 
-        print("详细日志")
-        print("--------")
-        log_lines = state.batch_logs[-220:]
-        for line in log_lines:
-            print(line)
-        print()
+    while True:
+        _consume_batch_events(state)
+
+        if state.batch_log_cursor < len(state.batch_logs):
+            for line in state.batch_logs[state.batch_log_cursor :]:
+                print(line)
+            state.batch_log_cursor = len(state.batch_logs)
 
         if state.batch_running:
-            print("Esc 取消并返回")
             key = _read_key_nonblocking()
             if key == "esc":
                 if not state.batch_requested_cancel and state.batch_cancel_token is not None:
                     state.batch_requested_cancel = True
+                    state.batch_logs.append("[操作] 已请求取消，等待当前步骤结束")
                     try:
                         cancel = getattr(state.batch_cancel_token, "cancel", None)
                         if callable(cancel):
@@ -991,6 +992,7 @@ def _render_processing_page(state: SessionState) -> Page:
             f"退出码：{state.batch_result_rc}",
         ]
         state.batch_finished = False
+        state.batch_processing_header_printed = False
         return _show_info(state, "执行结果", lines, Page.BATCH, "主菜单->批处理->执行结果")
 
 
@@ -1113,3 +1115,4 @@ def run_interactive_menu() -> int:
             continue
 
     return 0
+
