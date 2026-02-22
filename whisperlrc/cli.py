@@ -170,8 +170,8 @@ def _build_config_summary(config: Path) -> list[str]:
         f"翻译目标：{cfg.translation.target}",
         f"提示词文件：{cfg.translation.llm_prompt_file}",
         f"偏好文件：{cfg.translation.llm_preferences_file}",
-        f"默认输入目录：{cfg.pipeline.default_input_dir}",
-        f"默认输出目录：{cfg.pipeline.default_output_dir}",
+        f"默认输入目录：{cfg.output.default_input_dir}",
+        f"默认输出目录：{cfg.output.default_output_dir}",
         f"支持输入格式：{', '.join(cfg.pipeline.input_formats)}",
         f"ASR 重试次数：{cfg.pipeline.retry_asr}",
         f"翻译重试次数：{cfg.pipeline.retry_translate}",
@@ -374,11 +374,10 @@ def _render_config_page(state: SessionState) -> Page:
     print("2) 切换会话配置文件路径")
     print("3) 重置会话配置为 settings.toml")
     print("4) 修改配置项（可保存到文件）")
-    print("5) 修改默认输入/输出目录（写入配置）")
     print()
     print("q 主菜单，Esc 返回")
 
-    key = _read_single_key({"1", "2", "3", "4", "5", "q"}, allow_esc=True)
+    key = _read_single_key({"1", "2", "3", "4", "q"}, allow_esc=True)
     if key == "q":
         return Page.MAIN
     if key == "esc":
@@ -399,8 +398,8 @@ def _render_config_page(state: SessionState) -> Page:
         state.config_path = Path(config_res.value)
         try:
             cfg = load_config(state.config_path)
-            state.input_dir = Path(cfg.pipeline.default_input_dir)
-            state.output_dir = Path(cfg.pipeline.default_output_dir)
+            state.input_dir = Path(cfg.output.default_input_dir)
+            state.output_dir = Path(cfg.output.default_output_dir)
             return _show_info(
                 state,
                 "配置结果",
@@ -419,8 +418,8 @@ def _render_config_page(state: SessionState) -> Page:
         state.config_path = Path("settings.toml")
         try:
             cfg = load_config(state.config_path)
-            state.input_dir = Path(cfg.pipeline.default_input_dir)
-            state.output_dir = Path(cfg.pipeline.default_output_dir)
+            state.input_dir = Path(cfg.output.default_input_dir)
+            state.output_dir = Path(cfg.output.default_output_dir)
             return _show_info(
                 state,
                 "配置结果",
@@ -442,45 +441,6 @@ def _render_config_page(state: SessionState) -> Page:
             return Page.CONFIG_EDIT_MENU
         except Exception as e:
             return _show_info(state, "配置结果", [f"加载配置失败：{e}"], Page.CONFIG, "主菜单->配置->配置结果")
-    if key == "5":
-        input_res = _read_line_with_cancel("默认输入目录", str(state.input_dir))
-        if input_res.kind == "main":
-            return Page.MAIN
-        if input_res.kind != "value":
-            return _show_info(state, "配置结果", ["已取消修改默认目录。"], Page.CONFIG, "主菜单->配置->配置结果")
-
-        output_res = _read_line_with_cancel("默认输出目录", str(state.output_dir))
-        if output_res.kind == "main":
-            return Page.MAIN
-        if output_res.kind != "value":
-            return _show_info(state, "配置结果", ["已取消修改默认目录。"], Page.CONFIG, "主菜单->配置->配置结果")
-
-        confirm = _confirm_action("确认写入默认输入/输出目录到当前配置文件？")
-        if confirm == "q":
-            return Page.MAIN
-        if confirm != "y":
-            return _show_info(state, "配置结果", ["已取消写入默认目录。"], Page.CONFIG, "主菜单->配置->配置结果")
-
-        try:
-            cfg = load_config(state.config_path)
-            cfg.pipeline.default_input_dir = input_res.value
-            cfg.pipeline.default_output_dir = output_res.value
-            save_config(state.config_path, cfg)
-            state.input_dir = Path(input_res.value)
-            state.output_dir = Path(output_res.value)
-            return _show_info(
-                state,
-                "配置结果",
-                [
-                    f"已写入配置文件：{state.config_path}",
-                    f"默认输入目录：{state.input_dir}",
-                    f"默认输出目录：{state.output_dir}",
-                ],
-                Page.CONFIG,
-                "主菜单->配置->配置结果",
-            )
-        except Exception as e:
-            return _show_info(state, "配置结果", [f"写入默认目录失败：{e}"], Page.CONFIG, "主菜单->配置->配置结果")
 
     return Page.CONFIG
 
@@ -634,6 +594,10 @@ def _render_config_edit_fields_page(state: SessionState) -> Page:
             try:
                 new_value = _parse_field_value(section, field_name, current, value_res.value)
                 setattr(section_obj, field_name, new_value)
+                if section == "output" and field_name == "default_input_dir":
+                    state.input_dir = Path(str(new_value))
+                if section == "output" and field_name == "default_output_dir":
+                    state.output_dir = Path(str(new_value))
                 return _show_info(
                     state,
                     "配置结果",
@@ -694,8 +658,8 @@ def run_interactive_menu() -> int:
     state = SessionState()
     try:
         cfg = load_config(state.config_path)
-        state.input_dir = Path(cfg.pipeline.default_input_dir)
-        state.output_dir = Path(cfg.pipeline.default_output_dir)
+        state.input_dir = Path(cfg.output.default_input_dir)
+        state.output_dir = Path(cfg.output.default_output_dir)
     except Exception:
         state.input_dir = Path("input_audio")
         state.output_dir = Path("output")

@@ -6,8 +6,6 @@ device = "cuda"
 compute_type = "float16"
 
 [pipeline]
-default_input_dir = "input_audio"
-default_output_dir = "output"
 input_formats = ["mp3", "wav"]
 retry_asr = 3
 retry_translate = 5
@@ -26,6 +24,8 @@ llm_context_window = 5
 timeout_sec = 30
 
 [output]
+default_input_dir = "input_audio"
+default_output_dir = "output"
 json_ext = ".json"
 write_lrc = false
 
