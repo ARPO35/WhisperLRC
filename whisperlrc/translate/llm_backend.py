@@ -474,7 +474,7 @@ class LLMTranslator(Translator):
             return
         lines = pref_path.read_text(encoding="utf-8").splitlines()
         for idx, raw in enumerate(lines, start=1):
-            line = raw.strip()
+            line = self._normalize_preference_line(raw)
             if not line or line.startswith("#"):
                 continue
             if line.lower().startswith("note:"):
@@ -498,6 +498,16 @@ class LLMTranslator(Translator):
                 logging.warning("偏好文件第 %d 行缺少 src/tgt，已跳过：%s", idx, raw)
                 continue
             self._add_term_from_obj({"src": src, "tgt": tgt, "note": note})
+
+    def _normalize_preference_line(self, raw: str) -> str:
+        line = raw.strip()
+        if not line:
+            return ""
+        # 支持 Markdown 列表前缀：- item / * item / + item / 1. item
+        line = re.sub(r"^([-*+]|\d+\.)\s+", "", line)
+        # 支持 Markdown 引用前缀：> item
+        line = re.sub(r"^>\s*", "", line)
+        return line.strip()
 
     def _render_perf_block(self) -> str:
         lines: list[str] = []
