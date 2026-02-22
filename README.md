@@ -29,10 +29,16 @@ python main.py
 - `llm_model`
 - `llm_base_url`
 - `llm_api_key`
-- `llm_system_prompt`（可配置系统提示词）
 - `llm_batch_size`（默认每组 10 句）
 - `llm_context_window`（默认前后文各 5 句）
-- `llm_preferences`（可配置翻译偏好，支持术语映射或自然语言说明）
+
+提示词与翻译偏好改为读取项目根目录文件（`settings.toml` 旧字段已弃用）：
+
+- `prompt.txt`：系统提示词模板。可使用 `{perf}` 占位符插入偏好字典。
+- `preferences.txt`：每行一条偏好。
+- 术语语法：`src => tgt` 或 `src => tgt | note`
+- 说明语法：`note: 文本`
+- 注释语法：`# ...`
 
 LLM 必须返回 YAML，格式要求如下（`terms` 可选）：
 

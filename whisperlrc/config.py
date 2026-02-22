@@ -30,10 +30,8 @@ class TranslationConfig:
     llm_model: str = ""
     llm_base_url: str = ""
     llm_api_key: str = ""
-    llm_system_prompt: str = ""
     llm_batch_size: int = 10
     llm_context_window: int = 5
-    llm_preferences: list[dict[str, Any]] = field(default_factory=list)
     timeout_sec: int = 30
 
 

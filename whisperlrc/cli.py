@@ -166,6 +166,8 @@ def _build_config_summary(config: Path) -> list[str]:
         f"运行设备：{cfg.asr.device}",
         f"翻译后端：{cfg.translation.backend}",
         f"翻译目标：{cfg.translation.target}",
+        "提示词文件：prompt.txt",
+        "偏好文件：preferences.txt",
         f"支持输入格式：{', '.join(cfg.pipeline.input_formats)}",
         f"ASR 重试次数：{cfg.pipeline.retry_asr}",
         f"翻译重试次数：{cfg.pipeline.retry_translate}",
@@ -252,9 +254,6 @@ def _parse_field_value(section: str, field_name: str, current: Any, text: str) -
         parsed = json.loads(text)
         if not isinstance(parsed, list):
             raise ValueError("列表字段需要 JSON 数组")
-        if field_name == "llm_preferences":
-            if any(not isinstance(v, dict) for v in parsed):
-                raise ValueError("llm_preferences 需要 JSON 对象数组")
         return parsed
     raise ValueError("暂不支持该字段类型")
 
@@ -586,6 +585,8 @@ def _render_help_page() -> Page:
     print("- Esc：全局返回（在主菜单中 Esc 退出）")
     print("- 关键动作会要求 y/n 二次确认")
     print("- 信息结果以单独页面展示，Esc 关闭")
+    print("- 提示词从 prompt.txt 读取，翻译偏好从 preferences.txt 读取")
+    print("- 在 prompt.txt 中可使用 {perf} 插入偏好字典")
     print()
     print("q 主菜单，Esc 返回")
 

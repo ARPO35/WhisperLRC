@@ -17,6 +17,8 @@ llm_provider = "openai_compatible"
 llm_model = ""
 llm_base_url = ""
 llm_api_key = ""
+llm_batch_size = 10
+llm_context_window = 5
 timeout_sec = 30
 
 [output]
