@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Callable
 from urllib import error, request
@@ -345,7 +346,8 @@ class LLMTranslator(Translator):
         *,
         expected_count: int,
     ) -> tuple[list[str], list[dict[str, str]], str]:
-        data = self._load_json_object_robust(content)
+        think_cot, json_payload = self._extract_think_block(content)
+        data = self._load_json_object_robust(json_payload)
         if not isinstance(data, dict):
             raise RuntimeError("JSON 顶层必须是对象")
 
@@ -383,7 +385,8 @@ class LLMTranslator(Translator):
                 if not src or not tgt:
                     continue
                 terms.append({"src": src, "tgt": tgt, "note": note})
-        cot = self._normalize_cot(data.get("cot"))
+        cot_field = self._normalize_cot(data.get("cot"))
+        cot = self._merge_cot_text(think_cot, cot_field)
         return translations, terms, cot
 
     def _strip_markdown_fence(self, text: str) -> str:
@@ -427,6 +430,21 @@ class LLMTranslator(Translator):
             return json.dumps(raw, ensure_ascii=False, indent=2).strip()
         except Exception:
             return str(raw).strip()
+
+    def _extract_think_block(self, content: str) -> tuple[str, str]:
+        text = content.strip()
+        pattern = re.compile(r"<think>(.*?)</think>", flags=re.IGNORECASE | re.DOTALL)
+        match = pattern.search(text)
+        if not match:
+            return "", text
+        think_text = match.group(1).strip()
+        cleaned = pattern.sub("", text, count=1).strip()
+        return think_text, cleaned
+
+    def _merge_cot_text(self, think_cot: str, cot_field: str) -> str:
+        if think_cot and cot_field:
+            return f"{think_cot}\n\n---\n\n{cot_field}"
+        return think_cot or cot_field
 
     def _project_root(self) -> Path:
         return Path(__file__).resolve().parents[2]
