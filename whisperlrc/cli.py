@@ -540,6 +540,10 @@ def _consume_batch_events(state: SessionState) -> None:
             _append_batch_log(state, "[LLM思考]")
             _append_batch_log(state, str(event.get("text", "")).strip() or "（空）")
             continue
+        if etype == "llm_final_output":
+            _append_batch_log(state, "[LLM最终输出]")
+            _append_batch_log(state, str(event.get("text", "")).strip() or "（空）")
+            continue
         if etype == "file_stats":
             asr_sec = float(event.get("asr_sec", 0.0) or 0.0)
             tr_sec = float(event.get("translate_sec", 0.0) or 0.0)
