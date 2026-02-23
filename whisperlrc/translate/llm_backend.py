@@ -322,6 +322,7 @@ class LLMTranslator(Translator):
         content = self._message_content_to_text(message.get("content"))
         if not content:
             raise RuntimeError("LLM 返回内容为空")
+        self._emit_final_output_event(event_cb, content, request_meta)
         return content
 
     def _request_chat_completion_with_tools(
@@ -492,6 +493,7 @@ class LLMTranslator(Translator):
 
             content = self._message_content_to_text(message.get("content"))
             if content:
+                self._emit_final_output_event(event_cb, content, round_meta)
                 return content
             raise RuntimeError("LLM 返回为空，且没有 tool_calls")
 
@@ -617,6 +619,23 @@ class LLMTranslator(Translator):
             {
                 "type": "llm_cot",
                 "text": reasoning,
+                "meta": meta or {},
+            },
+        )
+
+    def _emit_final_output_event(
+        self,
+        event_cb: Callable[[dict[str, Any]], None] | None,
+        text: str,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        if not text:
+            return
+        self._emit_event(
+            event_cb,
+            {
+                "type": "llm_final_output",
+                "text": text,
                 "meta": meta or {},
             },
         )
