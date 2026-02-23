@@ -166,9 +166,15 @@ def _read_nav_key() -> str:
     return fallback_map.get(text, "")
 
 
-def _read_line_with_cancel(label: str, default: str | None = None) -> LineInputResult:
+def _read_line_with_cancel(
+    label: str,
+    default: str | None = None,
+    *,
+    empty_as_default: bool = False,
+) -> LineInputResult:
     suffix = f" (当前: {default})" if default else ""
-    prompt = f"{label}{suffix}（回车取消，q 主菜单，Esc 返回）："
+    enter_hint = "回车保留默认" if empty_as_default and default is not None else "回车取消"
+    prompt = f"{label}{suffix}（{enter_hint}，q 主菜单，Esc 返回）："
 
     if os.name == "nt":
         try:
@@ -182,6 +188,8 @@ def _read_line_with_cancel(label: str, default: str | None = None) -> LineInputR
                     print()
                     text = "".join(chars).strip()
                     if not text:
+                        if empty_as_default and default is not None:
+                            return LineInputResult("value", default)
                         return LineInputResult("cancel")
                     if text.lower() == "q":
                         return LineInputResult("main")
@@ -204,6 +212,8 @@ def _read_line_with_cancel(label: str, default: str | None = None) -> LineInputR
 
     text = input(prompt).strip()
     if not text:
+        if empty_as_default and default is not None:
+            return LineInputResult("value", default)
         return LineInputResult("cancel")
     if text == "\x1b":
         return LineInputResult("cancel")
@@ -1053,19 +1063,19 @@ def _render_batch_page(state: SessionState) -> Page:
         return Page.PROCESSING
 
     if idx == 1:
-        input_res = _read_line_with_cancel("输入目录", str(state.input_dir))
+        input_res = _read_line_with_cancel("输入目录", str(state.input_dir), empty_as_default=True)
         if input_res.kind == "main":
             return Page.MAIN
         if input_res.kind != "value":
             return _show_info(state, "执行结果", ["已取消本次自定义执行。"], Page.BATCH, "主菜单->批处理->执行结果")
 
-        output_res = _read_line_with_cancel("输出目录", str(state.output_dir))
+        output_res = _read_line_with_cancel("输出目录", str(state.output_dir), empty_as_default=True)
         if output_res.kind == "main":
             return Page.MAIN
         if output_res.kind != "value":
             return _show_info(state, "执行结果", ["已取消本次自定义执行。"], Page.BATCH, "主菜单->批处理->执行结果")
 
-        config_res = _read_line_with_cancel("配置文件路径", str(state.config_path))
+        config_res = _read_line_with_cancel("配置文件路径", str(state.config_path), empty_as_default=True)
         if config_res.kind == "main":
             return Page.MAIN
         if config_res.kind != "value":
@@ -1144,7 +1154,7 @@ def _render_config_page(state: SessionState) -> Page:
             return _show_info(state, "配置结果", [f"加载配置失败：{e}"], Page.CONFIG, "主菜单->配置->配置结果")
 
     if idx == 2:
-        config_res = _read_line_with_cancel("配置文件路径", str(state.config_path))
+        config_res = _read_line_with_cancel("配置文件路径", str(state.config_path), empty_as_default=True)
         if config_res.kind == "main":
             return Page.MAIN
         if config_res.kind != "value":
@@ -1221,7 +1231,7 @@ def _render_check_page(state: SessionState) -> Page:
         return Page.API_TEST
 
     if idx == 2:
-        config_res = _read_line_with_cancel("配置文件路径", str(state.config_path))
+        config_res = _read_line_with_cancel("配置文件路径", str(state.config_path), empty_as_default=True)
         if config_res.kind == "main":
             return Page.MAIN
         if config_res.kind != "value":
@@ -1232,7 +1242,7 @@ def _render_check_page(state: SessionState) -> Page:
             return _show_info(state, "翻译后端检查", [f"检查失败：{e}"], Page.CHECK, "主菜单->检查->翻译后端检查")
 
     if idx == 3:
-        config_res = _read_line_with_cancel("配置文件路径", str(state.config_path))
+        config_res = _read_line_with_cancel("配置文件路径", str(state.config_path), empty_as_default=True)
         if config_res.kind == "main":
             return Page.MAIN
         if config_res.kind != "value":
@@ -1249,7 +1259,7 @@ def _render_check_page(state: SessionState) -> Page:
             return _show_info(state, "LRC 导出", [f"导出失败：{e}"], Page.CHECK, "主菜单->检查->LRC导出")
 
     if idx == 5:
-        path_res = _read_line_with_cancel("JSON 文件或目录路径", str(state.output_dir))
+        path_res = _read_line_with_cancel("JSON 文件或目录路径", str(state.output_dir), empty_as_default=True)
         if path_res.kind == "main":
             return Page.MAIN
         if path_res.kind != "value":
@@ -1387,7 +1397,7 @@ def _render_config_edit_fields_page(state: SessionState) -> Page:
                 "config_field_enter_edit",
                 {"section": section, "field": field_name, "current": str(current)},
             )
-            value_res = _read_line_with_cancel(f"新值 {field_name}", str(current))
+            value_res = _read_line_with_cancel(f"新值 {field_name}", str(current), empty_as_default=True)
             if value_res.kind == "main":
                 return _confirm_exit_config_edit(state, exit_page=Page.MAIN, stay_page=Page.CONFIG_EDIT_FIELDS)
             if value_res.kind != "value":
@@ -1488,7 +1498,7 @@ def _render_config_edit_llm_page(state: SessionState) -> Page:
                 "llm_config_enter_edit",
                 {"field": field_name, "current": str(current)},
             )
-            value_res = _read_line_with_cancel(f"新值 {field_name}", str(current))
+            value_res = _read_line_with_cancel(f"新值 {field_name}", str(current), empty_as_default=True)
             if value_res.kind == "main":
                 return _confirm_exit_config_edit(state, exit_page=Page.MAIN, stay_page=Page.CONFIG_EDIT_LLM)
             if value_res.kind != "value":
