@@ -258,6 +258,43 @@ class LLMTranslator(Translator):
                 "meta": request_meta or {},
             },
         )
+
+        try:
+            data = json.loads(body)
+        except Exception as e:
+            raise RuntimeError(f"LLM 返回不是合法 JSON：{e}") from e
+
+        usage_obj = data.get("usage") if isinstance(data, dict) else None
+        has_usage = isinstance(usage_obj, dict)
+        usage = usage_obj if isinstance(usage_obj, dict) else {}
+        completion_details = usage.get("completion_tokens_details")
+        if not isinstance(completion_details, dict):
+            completion_details = {}
+        prompt_details = usage.get("prompt_tokens_details")
+        if not isinstance(prompt_details, dict):
+            prompt_details = {}
+
+        def as_int(v: Any, default: int = 0) -> int:
+            try:
+                return int(v)
+            except Exception:
+                return default
+
+        self._emit_event(
+            event_cb,
+            {
+                "type": "llm_usage_tokens",
+                "has_usage": has_usage,
+                "prompt_tokens": as_int(usage.get("prompt_tokens", 0)),
+                "completion_tokens": as_int(usage.get("completion_tokens", 0)),
+                "total_tokens": as_int(usage.get("total_tokens", 0)),
+                "prompt_cache_hit_tokens": as_int(usage.get("prompt_cache_hit_tokens", 0)),
+                "prompt_cache_miss_tokens": as_int(usage.get("prompt_cache_miss_tokens", 0)),
+                "reasoning_tokens": as_int(completion_details.get("reasoning_tokens", 0)),
+                "cached_tokens": as_int(prompt_details.get("cached_tokens", 0)),
+                "meta": request_meta or {},
+            },
+        )
         self._emit_event(
             event_cb,
             {
@@ -267,11 +304,6 @@ class LLMTranslator(Translator):
                 "meta": request_meta or {},
             },
         )
-
-        try:
-            data = json.loads(body)
-        except Exception as e:
-            raise RuntimeError(f"LLM 返回不是合法 JSON：{e}") from e
         return data
 
     def _request_chat_completion(

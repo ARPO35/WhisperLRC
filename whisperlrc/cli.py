@@ -68,6 +68,15 @@ class SessionState:
     batch_output_dir: Path = Path()
     batch_current_log_path: Path | None = None
     batch_current_log_fp: TextIO | None = None
+    batch_current_prompt_tokens: int = 0
+    batch_current_completion_tokens: int = 0
+    batch_current_total_tokens: int = 0
+    batch_current_prompt_cache_hit_tokens: int = 0
+    batch_current_prompt_cache_miss_tokens: int = 0
+    batch_current_reasoning_tokens: int = 0
+    batch_current_cached_tokens: int = 0
+    batch_current_usage_missing_count: int = 0
+    batch_last_usage_has_usage: bool | None = None
     batch_current_input_chars: int = 0
     batch_current_output_chars: int = 0
     batch_current_tool_calls: int = 0
@@ -301,6 +310,15 @@ def _start_batch_task(
     state.batch_last_request_json = ""
     state.batch_last_response_json = ""
     state.batch_output_dir = output_dir
+    state.batch_current_prompt_tokens = 0
+    state.batch_current_completion_tokens = 0
+    state.batch_current_total_tokens = 0
+    state.batch_current_prompt_cache_hit_tokens = 0
+    state.batch_current_prompt_cache_miss_tokens = 0
+    state.batch_current_reasoning_tokens = 0
+    state.batch_current_cached_tokens = 0
+    state.batch_current_usage_missing_count = 0
+    state.batch_last_usage_has_usage = None
     state.batch_current_input_chars = 0
     state.batch_current_output_chars = 0
     state.batch_current_tool_calls = 0
@@ -353,6 +371,15 @@ def _consume_batch_events(state: SessionState) -> None:
         if etype == "file_start":
             state.batch_current_file = str(event.get("file", ""))
             state.batch_current_file_index = int(event.get("file_index", 0))
+            state.batch_current_prompt_tokens = 0
+            state.batch_current_completion_tokens = 0
+            state.batch_current_total_tokens = 0
+            state.batch_current_prompt_cache_hit_tokens = 0
+            state.batch_current_prompt_cache_miss_tokens = 0
+            state.batch_current_reasoning_tokens = 0
+            state.batch_current_cached_tokens = 0
+            state.batch_current_usage_missing_count = 0
+            state.batch_last_usage_has_usage = None
             state.batch_current_input_chars = 0
             state.batch_current_output_chars = 0
             state.batch_current_tool_calls = 0
@@ -383,9 +410,27 @@ def _consume_batch_events(state: SessionState) -> None:
             _append_batch_log(state, "[LLM响应]")
             _append_batch_log(state, state.batch_last_response_json or "（空）")
             continue
+        if etype == "llm_usage_tokens":
+            has_usage = bool(event.get("has_usage", False))
+            state.batch_last_usage_has_usage = has_usage
+            if not has_usage:
+                state.batch_current_usage_missing_count += 1
+                _append_batch_log(state, "[LLM统计]")
+                _append_batch_log(state, "usage 缺失，回退使用字符统计")
+            else:
+                state.batch_current_prompt_tokens += int(event.get("prompt_tokens", 0) or 0)
+                state.batch_current_completion_tokens += int(event.get("completion_tokens", 0) or 0)
+                state.batch_current_total_tokens += int(event.get("total_tokens", 0) or 0)
+                state.batch_current_prompt_cache_hit_tokens += int(event.get("prompt_cache_hit_tokens", 0) or 0)
+                state.batch_current_prompt_cache_miss_tokens += int(event.get("prompt_cache_miss_tokens", 0) or 0)
+                state.batch_current_reasoning_tokens += int(event.get("reasoning_tokens", 0) or 0)
+                state.batch_current_cached_tokens += int(event.get("cached_tokens", 0) or 0)
+            continue
         if etype == "llm_usage_chars":
-            state.batch_current_input_chars += int(event.get("input_chars", 0) or 0)
-            state.batch_current_output_chars += int(event.get("output_chars", 0) or 0)
+            if state.batch_last_usage_has_usage in {False, None}:
+                state.batch_current_input_chars += int(event.get("input_chars", 0) or 0)
+                state.batch_current_output_chars += int(event.get("output_chars", 0) or 0)
+            state.batch_last_usage_has_usage = None
             continue
         if etype == "llm_tool_call":
             state.batch_current_tool_calls += 1
@@ -418,11 +463,20 @@ def _consume_batch_events(state: SessionState) -> None:
             lines = [
                 f"文件：{event.get('file', '')}",
                 f"状态：{status}",
-                f"输入字符数：{state.batch_current_input_chars}",
-                f"输出字符数：{state.batch_current_output_chars}",
+                f"Prompt Tokens：{state.batch_current_prompt_tokens}",
+                f"Completion Tokens：{state.batch_current_completion_tokens}",
+                f"Total Tokens：{state.batch_current_total_tokens}",
+                f"Reasoning Tokens：{state.batch_current_reasoning_tokens}",
+                f"Prompt Cache Hit Tokens：{state.batch_current_prompt_cache_hit_tokens}",
+                f"Prompt Cache Miss Tokens：{state.batch_current_prompt_cache_miss_tokens}",
+                f"Prompt Cached Tokens：{state.batch_current_cached_tokens}",
+                f"usage 缺失次数：{state.batch_current_usage_missing_count}",
                 f"工具调用次数：{state.batch_current_tool_calls}",
                 f"耗时：ASR {asr_sec:.2f}s | 翻译 {tr_sec:.2f}s | 写出 {write_sec:.2f}s | 总计 {total_sec:.2f}s",
             ]
+            if state.batch_current_usage_missing_count > 0:
+                lines.insert(8, f"输出字符数(回退)：{state.batch_current_output_chars}")
+                lines.insert(8, f"输入字符数(回退)：{state.batch_current_input_chars}")
             state.batch_last_file_stats_lines = lines
             _append_batch_log(state, "[统计]")
             for line in lines:

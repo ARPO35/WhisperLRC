@@ -83,8 +83,10 @@ LLM 必须返回 JSON，格式要求如下（`terms` 可选）：
   - `[LLM工具错误]`（不支持 tools 或执行失败等）
 - 处理中按 `Esc` 会发起取消请求，并返回上一级页面；取消在当前步骤安全结束后生效。
 - 每个音频文件处理完成后会显示当前文件统计：
-  - 输入字符数（LLM 请求 JSON 字符总数）
-  - 输出字符数（LLM 响应 JSON 字符总数）
+  - Prompt Tokens / Completion Tokens / Total Tokens
+  - Reasoning Tokens
+  - Prompt Cache Hit Tokens / Prompt Cache Miss Tokens / Prompt Cached Tokens
+  - usage 缺失次数（缺失时回退统计输入/输出字符数）
   - 工具调用次数
   - 阶段耗时（ASR / 翻译 / 写出 / 总计）
 - 执行中的日志会写入输出目录下对应文件名的 `.log` 文件（如 `song.mp3` 对应 `song.log`，重名自动追加后缀）。
@@ -106,6 +108,19 @@ LLM 思考内容从 `choices.message.reasoning_content` 读取。
 - 思考内容不参与最终翻译结果写入。
 - 翻译 JSON 解析时会优先严格解析；若响应带有前后缀文本，会自动清洗并提取 JSON 对象。
 - 主流程仍以 `translations` 为必需字段，`terms` 为可选。
+
+### Token 统计口径
+
+- Token 消耗统计仅使用响应 `usage` 字段。
+- 已统计字段：
+  - `prompt_tokens`
+  - `completion_tokens`
+  - `total_tokens`
+  - `prompt_cache_hit_tokens`
+  - `prompt_cache_miss_tokens`
+  - `completion_tokens_details.reasoning_tokens`
+  - `prompt_tokens_details.cached_tokens`
+- 若某次响应缺少 `usage`，程序会记录缺失次数，并回退使用请求/响应字符数作为该次近似统计。
 
 ## LRC 导出与校对
 
