@@ -347,7 +347,6 @@ class LLMTranslator(Translator):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        tool_conversation: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
         tools = [self._build_relisten_tool_spec()]
         used_calls = 0
         per_index_calls: dict[int, int] = {}
@@ -374,16 +373,11 @@ class LLMTranslator(Translator):
                         event_cb,
                         {
                             "type": "llm_tool_error",
-                            "text": f"模型端不支持 tools，降级为普通请求：{e}",
+                            "text": f"模型端不支持 tools，终止当前分组：{e}",
                             "meta": round_meta,
                         },
                     )
-                    tools_enabled = False
-                    messages = [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ]
-                    continue
+                    raise RuntimeError(f"模型端不支持 tools：{e}") from e
                 raise
 
             try:
@@ -397,11 +391,10 @@ class LLMTranslator(Translator):
                 force_finalize = False
                 assistant_tool_call = {
                     "role": "assistant",
-                    "content": self._message_content_to_text(message.get("content")),
+                    "content": message.get("content"),
                     "tool_calls": tool_calls,
                 }
                 messages.append(assistant_tool_call)
-                tool_conversation.append(assistant_tool_call)
                 for call in tool_calls:
                     used_calls += 1
                     call_meta = dict(round_meta)
@@ -464,34 +457,13 @@ class LLMTranslator(Translator):
                             "content": result_json,
                         }
                     )
-                    tool_conversation.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": str(call.get("id", "")),
-                            "name": call_name,
-                            "content": result_json,
-                        }
-                    )
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": self._build_tool_session_assistant_context_message(
-                            conversation=tool_conversation,
-                            used_calls=used_calls,
-                            per_index_calls=per_index_calls,
-                            force_finalize=force_finalize,
-                        ),
-                    }
-                )
                 if force_finalize:
                     tools_enabled = False
                 continue
 
             content = self._message_content_to_text(message.get("content"))
             if content:
-                tool_conversation.clear()
                 return content
-            tool_conversation.clear()
             raise RuntimeError("LLM 返回为空，且没有 tool_calls")
 
         raise RuntimeError("LLM tool 调用轮数超限，终止本组")
@@ -561,37 +533,6 @@ class LLMTranslator(Translator):
             return int(raw_idx)
         except Exception:
             return None
-
-    def _build_tool_session_assistant_context_message(
-        self,
-        *,
-        conversation: list[dict[str, Any]],
-        used_calls: int,
-        per_index_calls: dict[int, int],
-        force_finalize: bool,
-    ) -> str:
-        payload = json.dumps(
-            {
-                "conversation": conversation,
-                "used_calls": used_calls,
-                "call_limit": self.TOOL_MAX_CALLS_PER_GROUP,
-                "per_index_calls": per_index_calls,
-                "per_index_limit": self.TOOL_MAX_CALLS_PER_INDEX,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-        if force_finalize:
-            return (
-                "以下是当前完整对话上下文。\n"
-                f"{payload}\n"
-                "工具调用已收敛，请不要继续调用工具，请直接输出最终 JSON。"
-            )
-        return (
-            "以下是当前完整对话上下文。\n"
-            f"{payload}\n"
-            "仅在仍有明显识别问题时继续调用工具，否则请直接输出最终 JSON。"
-        )
 
     def _message_content_to_text(self, content: Any) -> str:
         if isinstance(content, str):
