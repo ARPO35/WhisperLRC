@@ -358,6 +358,7 @@ class LLMTranslator(Translator):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
+        tool_conversation: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
         tools = [self._build_relisten_tool_spec()]
         used_calls = 0
         per_index_calls: dict[int, int] = {}
@@ -405,13 +406,13 @@ class LLMTranslator(Translator):
             tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
             if tools_enabled and isinstance(tool_calls, list) and tool_calls:
                 force_finalize = False
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": self._message_content_to_text(message.get("content")),
-                        "tool_calls": tool_calls,
-                    }
-                )
+                assistant_tool_call = {
+                    "role": "assistant",
+                    "content": self._message_content_to_text(message.get("content")),
+                    "tool_calls": tool_calls,
+                }
+                messages.append(assistant_tool_call)
+                tool_conversation.append(assistant_tool_call)
                 for call in tool_calls:
                     used_calls += 1
                     call_meta = dict(round_meta)
@@ -474,10 +475,19 @@ class LLMTranslator(Translator):
                             "content": result_json,
                         }
                     )
+                    tool_conversation.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": str(call.get("id", "")),
+                            "name": call_name,
+                            "content": result_json,
+                        }
+                    )
                 messages.append(
                     {
-                        "role": "user",
-                        "content": self._build_tool_session_user_message(
+                        "role": "assistant",
+                        "content": self._build_tool_session_assistant_context_message(
+                            conversation=tool_conversation,
                             used_calls=used_calls,
                             per_index_calls=per_index_calls,
                             force_finalize=force_finalize,
@@ -490,7 +500,9 @@ class LLMTranslator(Translator):
 
             content = self._message_content_to_text(message.get("content"))
             if content:
+                tool_conversation.clear()
                 return content
+            tool_conversation.clear()
             raise RuntimeError("LLM 返回为空，且没有 tool_calls")
 
         raise RuntimeError("LLM tool 调用轮数超限，终止本组")
@@ -561,32 +573,35 @@ class LLMTranslator(Translator):
         except Exception:
             return None
 
-    def _build_tool_session_user_message(
+    def _build_tool_session_assistant_context_message(
         self,
         *,
+        conversation: list[dict[str, Any]],
         used_calls: int,
         per_index_calls: dict[int, int],
         force_finalize: bool,
     ) -> str:
-        summary = json.dumps(
+        payload = json.dumps(
             {
+                "conversation": conversation,
                 "used_calls": used_calls,
                 "call_limit": self.TOOL_MAX_CALLS_PER_GROUP,
                 "per_index_calls": per_index_calls,
                 "per_index_limit": self.TOOL_MAX_CALLS_PER_INDEX,
             },
             ensure_ascii=False,
+            indent=2,
         )
         if force_finalize:
             return (
-                "工具调用已收敛，请不要继续调用工具。"
-                "请基于已有上下文与工具结果，直接输出最终 JSON。"
-                f"\n会话摘要：{summary}"
+                "以下是当前完整对话上下文。\n"
+                f"{payload}\n"
+                "工具调用已收敛，请不要继续调用工具，请直接输出最终 JSON。"
             )
         return (
-            "请先检查当前会话摘要，避免重复调用同一句。"
-            "若仍有明显识别问题再调用工具；否则直接输出最终 JSON。"
-            f"\n会话摘要：{summary}"
+            "以下是当前完整对话上下文。\n"
+            f"{payload}\n"
+            "仅在仍有明显识别问题时继续调用工具，否则请直接输出最终 JSON。"
         )
 
     def _message_content_to_text(self, content: Any) -> str:
@@ -719,13 +734,7 @@ class LLMTranslator(Translator):
                 }
             )
         payload = json.dumps(items, ensure_ascii=False, indent=2)
-        return (
-            f"请将以下句子从 {src} 翻译到 {tgt}。\n"
-            "上下文只用于理解语义，不需要翻译上下文本身。\n"
-            "请按 index 返回每条翻译。\n"
-            "输入数据（JSON）：\n"
-            f"{payload}"
-        )
+        return f"翻译：{payload}"
 
     def _parse_json_response(
         self,
