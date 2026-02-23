@@ -144,25 +144,14 @@ class LLMTranslator(Translator):
                     "max_attempts": max_attempts,
                 }
                 raw = ""
-                try:
+                if relisten_executor is None:
                     raw = self._request_chat_completion(
                         system_prompt,
                         input_payload,
                         event_cb=event_cb,
                         request_meta={**request_meta, "phase": "direct"},
                     )
-                    parsed = self._parse_json_response(raw, expected_count=len(group_texts))
-                except Exception as direct_err:
-                    if relisten_executor is None:
-                        raise direct_err
-                    self._emit_event(
-                        event_cb,
-                        {
-                            "type": "llm_tool_error",
-                            "text": f"直出失败，进入工具会话：{direct_err}",
-                            "meta": {**request_meta, "phase": "direct"},
-                        },
-                    )
+                else:
                     raw = self._request_chat_completion_with_tools(
                         system_prompt,
                         input_payload,
@@ -172,7 +161,7 @@ class LLMTranslator(Translator):
                         group_size=len(group_texts),
                         relisten_executor=relisten_executor,
                     )
-                    parsed = self._parse_json_response(raw, expected_count=len(group_texts))
+                parsed = self._parse_json_response(raw, expected_count=len(group_texts))
                 if self._is_cancelled(cancel_token):
                     raise RuntimeError("用户取消处理")
                 translations, terms = parsed
