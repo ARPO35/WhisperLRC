@@ -85,6 +85,8 @@ class SessionState:
     batch_current_output_chars: int = 0
     batch_current_tool_calls: int = 0
     batch_last_file_stats_lines: list[str] = field(default_factory=list)
+    op_log_path: Path | None = None
+    op_log_fp: TextIO | None = None
 
 
 @dataclass
@@ -288,6 +290,77 @@ def _safe_log_stem(file_name: str) -> str:
     return stem or "unnamed"
 
 
+def _ensure_unique_session_log_path(output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    candidate = output_dir / f"session_{ts}.log"
+    if not candidate.exists():
+        return candidate
+    i = 1
+    while True:
+        candidate = output_dir / f"session_{ts}_{i}.log"
+        if not candidate.exists():
+            return candidate
+        i += 1
+
+
+def _open_operation_log_file(state: SessionState) -> None:
+    if state.op_log_fp is not None:
+        return
+    try:
+        output_dir = state.output_dir if str(state.output_dir).strip() else Path("output")
+        log_path = _ensure_unique_session_log_path(output_dir)
+        state.op_log_fp = log_path.open("w", encoding="utf-8")
+        state.op_log_path = log_path
+    except Exception:
+        state.op_log_fp = None
+        state.op_log_path = None
+
+
+def _close_operation_log_file(state: SessionState) -> None:
+    if state.op_log_fp is not None:
+        try:
+            state.op_log_fp.flush()
+            state.op_log_fp.close()
+        except Exception:
+            pass
+    state.op_log_fp = None
+    state.op_log_path = None
+
+
+def _append_operation_log(state: SessionState, event: str, payload: dict[str, Any] | None = None) -> None:
+    fp = state.op_log_fp
+    if fp is None:
+        return
+    record = {
+        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "event": event,
+        "payload": payload or {},
+    }
+    try:
+        fp.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        fp.flush()
+    except Exception:
+        pass
+
+
+def _state_snapshot(state: SessionState) -> dict[str, Any]:
+    return {
+        "config_path": str(state.config_path),
+        "input_dir": str(state.input_dir),
+        "output_dir": str(state.output_dir),
+        "batch_running": state.batch_running,
+        "batch_finished": state.batch_finished,
+        "batch_requested_cancel": state.batch_requested_cancel,
+        "batch_total_files": state.batch_total_files,
+        "batch_current_file": state.batch_current_file,
+        "batch_current_file_index": state.batch_current_file_index,
+        "batch_group_index": state.batch_group_index,
+        "batch_group_total": state.batch_group_total,
+        "batch_result_rc": state.batch_result_rc,
+    }
+
+
 def _ensure_unique_log_path(output_dir: Path, stem: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     candidate = output_dir / f"{stem}.log"
@@ -414,6 +487,16 @@ def _start_batch_task(
     state.batch_logs = [f"[启动] {state.batch_running_path}"]
     state.batch_log_cursor = 0
     state.batch_processing_header_printed = False
+    _append_operation_log(
+        state,
+        "batch_start_requested",
+        {
+            "input_dir": str(input_dir),
+            "output_dir": str(output_dir),
+            "config": str(config),
+            "state": _state_snapshot(state),
+        },
+    )
 
     def emit(event: dict[str, Any]) -> None:
         task_q.put(event)
@@ -450,6 +533,15 @@ def _consume_batch_events(state: SessionState) -> None:
             return
 
         etype = str(event.get("type", "")).strip()
+        _append_operation_log(
+            state,
+            "batch_event",
+            {
+                "type": etype,
+                "event": event,
+                "state_before": _state_snapshot(state),
+            },
+        )
         if etype == "batch_start":
             state.batch_total_files = int(event.get("total_files", 0))
             _append_batch_log(state, f"[批处理] 总文件数={state.batch_total_files}")
@@ -600,6 +692,16 @@ def _consume_batch_events(state: SessionState) -> None:
                 state.batch_summary_lines.extend(state.batch_last_file_stats_lines)
             _append_batch_log(state, f"[结束] 状态={status} 退出码={state.batch_result_rc}")
             _close_current_log_file(state)
+            _append_operation_log(
+                state,
+                "batch_worker_done",
+                {
+                    "status": status,
+                    "rc": state.batch_result_rc,
+                    "summary_lines": state.batch_summary_lines,
+                    "state_after": _state_snapshot(state),
+                },
+            )
             continue
         if etype == "worker_error":
             state.batch_running = False
@@ -614,6 +716,14 @@ def _consume_batch_events(state: SessionState) -> None:
             ]
             _append_batch_log(state, f"[异常] {state.batch_error}")
             _close_current_log_file(state)
+            _append_operation_log(
+                state,
+                "batch_worker_error",
+                {
+                    "error": state.batch_error,
+                    "state_after": _state_snapshot(state),
+                },
+            )
             continue
 
 
@@ -885,9 +995,14 @@ def _confirm_exit_config_edit(state: SessionState, *, exit_page: Page, stay_page
     return exit_page
 
 
-def _render_main_page() -> Page | None:
+def _render_main_page(state: SessionState) -> Page | None:
     options = ["批处理", "配置", "检查", "帮助"]
     action, idx = _run_arrow_menu(path="主菜单", title="WhisperLRC 主菜单", options=options)
+    _append_operation_log(
+        state,
+        "main_menu_action",
+        {"action": action, "index": idx, "option": options[idx] if 0 <= idx < len(options) else ""},
+    )
     if action == "esc":
         return None
     if action == "q":
@@ -912,6 +1027,11 @@ def _render_batch_page(state: SessionState) -> Page:
         "查看当前运行参数",
     ]
     action, idx = _run_arrow_menu(path="主菜单->批处理", title="批处理页面", options=options)
+    _append_operation_log(
+        state,
+        "batch_menu_action",
+        {"action": action, "index": idx, "option": options[idx] if 0 <= idx < len(options) else ""},
+    )
     if action == "q":
         return Page.MAIN
     if action == "esc":
@@ -919,6 +1039,7 @@ def _render_batch_page(state: SessionState) -> Page:
 
     if idx == 0:
         confirm = _confirm_action("确认开始执行？")
+        _append_operation_log(state, "batch_confirm_default_run", {"confirm": confirm})
         if confirm == "q":
             return Page.MAIN
         if confirm != "y":
@@ -951,6 +1072,16 @@ def _render_batch_page(state: SessionState) -> Page:
             return _show_info(state, "执行结果", ["已取消本次自定义执行。"], Page.BATCH, "主菜单->批处理->执行结果")
 
         confirm = _confirm_action("确认开始执行？")
+        _append_operation_log(
+            state,
+            "batch_confirm_custom_run",
+            {
+                "confirm": confirm,
+                "input_dir": input_res.value if input_res.kind == "value" else "",
+                "output_dir": output_res.value if output_res.kind == "value" else "",
+                "config": config_res.value if config_res.kind == "value" else "",
+            },
+        )
         if confirm == "q":
             return Page.MAIN
         if confirm != "y":
@@ -982,6 +1113,11 @@ def _render_config_page(state: SessionState) -> Page:
         "重置会话配置为 settings.toml",
     ]
     action, idx = _run_arrow_menu(path="主菜单->配置", title="配置页面", options=options)
+    _append_operation_log(
+        state,
+        "config_menu_action",
+        {"action": action, "index": idx, "option": options[idx] if 0 <= idx < len(options) else ""},
+    )
     if action == "q":
         return Page.MAIN
     if action == "esc":
@@ -1064,6 +1200,11 @@ def _render_check_page(state: SessionState) -> Page:
         "从 JSON 路径导出 LRC",
     ]
     action, idx = _run_arrow_menu(path="主菜单->检查", title="检查页面", options=options)
+    _append_operation_log(
+        state,
+        "check_menu_action",
+        {"action": action, "index": idx, "option": options[idx] if 0 <= idx < len(options) else ""},
+    )
     if action == "q":
         return Page.MAIN
     if action == "esc":
@@ -1138,6 +1279,11 @@ def _render_config_edit_menu_page(state: SessionState) -> Page:
         options=options,
         cursor=state.edit_menu_cursor,
     )
+    _append_operation_log(
+        state,
+        "config_edit_menu_action",
+        {"action": action, "index": idx, "option": options[idx] if 0 <= idx < len(options) else ""},
+    )
     state.edit_menu_cursor = idx
     if action == "q":
         return _confirm_exit_config_edit(state, exit_page=Page.MAIN, stay_page=Page.CONFIG_EDIT_MENU)
@@ -1207,6 +1353,15 @@ def _render_config_edit_fields_page(state: SessionState) -> Page:
             continue
         if key in {"left", "right"}:
             field_name, _current = items[state.edit_field_cursor]
+            _append_operation_log(
+                state,
+                "config_field_adjust",
+                {
+                    "section": section,
+                    "field": field_name,
+                    "direction": key,
+                },
+            )
             delta = -1 if key == "left" else 1
             ok, msg = _adjust_field_by_arrow(
                 section=section,
@@ -1227,6 +1382,11 @@ def _render_config_edit_fields_page(state: SessionState) -> Page:
             continue
         if key == "enter":
             field_name, current = items[state.edit_field_cursor]
+            _append_operation_log(
+                state,
+                "config_field_enter_edit",
+                {"section": section, "field": field_name, "current": str(current)},
+            )
             value_res = _read_line_with_cancel(f"新值 {field_name}", str(current))
             if value_res.kind == "main":
                 return _confirm_exit_config_edit(state, exit_page=Page.MAIN, stay_page=Page.CONFIG_EDIT_FIELDS)
@@ -1236,8 +1396,18 @@ def _render_config_edit_fields_page(state: SessionState) -> Page:
             try:
                 new_value = _parse_field_value(section, field_name, current, value_res.value)
                 _apply_field_update(state, section, section_obj, field_name, new_value)
+                _append_operation_log(
+                    state,
+                    "config_field_updated",
+                    {"section": section, "field": field_name, "new_value": str(new_value)},
+                )
                 notice = f"已更新 {field_name} = {_format_value_for_menu(new_value)}"
             except Exception as e:
+                _append_operation_log(
+                    state,
+                    "config_field_update_error",
+                    {"section": section, "field": field_name, "error": str(e)},
+                )
                 notice = f"更新失败：{e}"
             continue
         if key == "q":
@@ -1288,6 +1458,11 @@ def _render_config_edit_llm_page(state: SessionState) -> Page:
             continue
         if key in {"left", "right"}:
             field_name, _current = items[state.edit_llm_cursor]
+            _append_operation_log(
+                state,
+                "llm_config_adjust",
+                {"field": field_name, "direction": key},
+            )
             delta = -1 if key == "left" else 1
             ok, msg = _adjust_field_by_arrow(
                 section="translation",
@@ -1308,6 +1483,11 @@ def _render_config_edit_llm_page(state: SessionState) -> Page:
             continue
         if key == "enter":
             field_name, current = items[state.edit_llm_cursor]
+            _append_operation_log(
+                state,
+                "llm_config_enter_edit",
+                {"field": field_name, "current": str(current)},
+            )
             value_res = _read_line_with_cancel(f"新值 {field_name}", str(current))
             if value_res.kind == "main":
                 return _confirm_exit_config_edit(state, exit_page=Page.MAIN, stay_page=Page.CONFIG_EDIT_LLM)
@@ -1317,8 +1497,18 @@ def _render_config_edit_llm_page(state: SessionState) -> Page:
             try:
                 new_value = _parse_field_value("translation", field_name, current, value_res.value)
                 _apply_field_update(state, "translation", section_obj, field_name, new_value)
+                _append_operation_log(
+                    state,
+                    "llm_config_updated",
+                    {"field": field_name, "new_value": str(new_value)},
+                )
                 notice = f"已更新 {field_name} = {_format_value_for_menu(new_value)}"
             except Exception as e:
+                _append_operation_log(
+                    state,
+                    "llm_config_update_error",
+                    {"field": field_name, "error": str(e)},
+                )
                 notice = f"更新失败：{e}"
             continue
         if key == "q":
@@ -1336,6 +1526,11 @@ def _render_processing_page(state: SessionState) -> Page:
         print("日志正在滚动输出")
         print()
         state.batch_processing_header_printed = True
+        _append_operation_log(
+            state,
+            "processing_page_enter",
+            {"running_path": state.batch_running_path, "state": _state_snapshot(state)},
+        )
 
     while True:
         _consume_batch_events(state)
@@ -1348,6 +1543,7 @@ def _render_processing_page(state: SessionState) -> Page:
         if state.batch_running:
             key = _read_key_nonblocking()
             if key == "esc":
+                _append_operation_log(state, "processing_key", {"key": "esc", "state": _state_snapshot(state)})
                 if not state.batch_requested_cancel and state.batch_cancel_token is not None:
                     state.batch_requested_cancel = True
                     _append_batch_log(state, "[操作] 已请求取消，等待当前步骤结束")
@@ -1359,6 +1555,7 @@ def _render_processing_page(state: SessionState) -> Page:
                         pass
                 return Page.BATCH
             if key == "q":
+                _append_operation_log(state, "processing_key", {"key": "q", "state": _state_snapshot(state)})
                 return Page.MAIN
             time.sleep(0.12)
             continue
@@ -1367,6 +1564,11 @@ def _render_processing_page(state: SessionState) -> Page:
             f"状态：{'已取消' if state.batch_requested_cancel else '已完成'}",
             f"退出码：{state.batch_result_rc}",
         ]
+        _append_operation_log(
+            state,
+            "processing_finished",
+            {"summary": lines, "state": _state_snapshot(state)},
+        )
         state.batch_finished = False
         state.batch_processing_header_printed = False
         return _show_info(state, "执行结果", lines, Page.BATCH, "主菜单->批处理->执行结果")
@@ -1448,13 +1650,36 @@ def run_interactive_menu() -> int:
     except Exception:
         state.input_dir = Path("input_audio")
         state.output_dir = Path("output")
+    _open_operation_log_file(state)
+    if state.op_log_path is not None:
+        print(f"会话日志：{state.op_log_path}")
+    _append_operation_log(
+        state,
+        "app_start",
+        {
+            "state": _state_snapshot(state),
+            "op_log_path": str(state.op_log_path) if state.op_log_path else "",
+        },
+    )
     page: Page | None = Page.MAIN
+    prev_page: Page | None = None
 
     try:
         while page is not None:
+            if page != prev_page:
+                _append_operation_log(
+                    state,
+                    "page_transition",
+                    {
+                        "from": prev_page.name if prev_page else None,
+                        "to": page.name,
+                        "state": _state_snapshot(state),
+                    },
+                )
+                prev_page = page
             _clear_screen()
             if page == Page.MAIN:
-                page = _render_main_page()
+                page = _render_main_page(state)
                 continue
             if page == Page.BATCH:
                 page = _render_batch_page(state)
@@ -1487,7 +1712,16 @@ def run_interactive_menu() -> int:
                 page = _render_info_page(state)
                 continue
     finally:
+        _append_operation_log(
+            state,
+            "app_exit",
+            {
+                "state": _state_snapshot(state),
+                "next_page": page.name if isinstance(page, Page) else None,
+            },
+        )
         _close_current_log_file(state)
+        _close_operation_log_file(state)
 
     return 0
 
