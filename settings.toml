@@ -14,6 +14,7 @@ retry_translate = 5
 backend = "llm"
 target = "zh-Hans"
 llm_provider = "openai_compatible"
+llm_enable_thinking = true
 llm_model = "deepseek-ai/deepseek-v3.2"
 llm_base_url = "https://api.siliconflow.cn/v1"
 llm_api_key = "sk-ezozekhvgculbauasqarvmuhsseolrfrsxlqmoegyuahuuxc"

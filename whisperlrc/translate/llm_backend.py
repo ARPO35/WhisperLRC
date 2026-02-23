@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any, Callable
 from urllib import error, request
@@ -176,24 +175,8 @@ class LLMTranslator(Translator):
                     parsed = self._parse_json_response(raw, expected_count=len(group_texts))
                 if self._is_cancelled(cancel_token):
                     raise RuntimeError("用户取消处理")
-                translations, terms, cot = parsed
+                translations, terms = parsed
                 self._merge_terms(terms)
-                if cot:
-                    self._emit_event(
-                        event_cb,
-                        {
-                            "type": "llm_cot",
-                            "text": cot,
-                            "meta": {
-                                "group_index": group_index,
-                                "total_groups": total_groups,
-                                "group_start": group_start,
-                                "group_size": len(group_texts),
-                                "attempt": attempt,
-                                "max_attempts": max_attempts,
-                            },
-                        },
-                    )
                 return translations
             except Exception as e:
                 last_err = e
@@ -302,6 +285,7 @@ class LLMTranslator(Translator):
         req_payload = {
             "model": self.cfg.llm_model,
             "temperature": 0,
+            "enable_thinking": bool(self.cfg.llm_enable_thinking),
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -312,6 +296,7 @@ class LLMTranslator(Translator):
             message = data["choices"][0]["message"]
         except Exception as e:
             raise RuntimeError(f"LLM 返回 JSON 结构异常：{e}") from e
+        self._emit_reasoning_event(event_cb, message, request_meta)
 
         content = self._message_content_to_text(message.get("content"))
         if not content:
@@ -350,6 +335,7 @@ class LLMTranslator(Translator):
             req_payload: dict[str, Any] = {
                 "model": self.cfg.llm_model,
                 "temperature": 0,
+                "enable_thinking": bool(self.cfg.llm_enable_thinking),
                 "messages": messages,
             }
             if tools_enabled:
@@ -382,6 +368,7 @@ class LLMTranslator(Translator):
                 message = data["choices"][0]["message"]
             except Exception as e:
                 raise RuntimeError(f"LLM 返回 JSON 结构异常：{e}") from e
+            self._emit_reasoning_event(event_cb, message, round_meta)
 
             tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
             if tools_enabled and isinstance(tool_calls, list) and tool_calls:
@@ -583,6 +570,42 @@ class LLMTranslator(Translator):
             return "\n".join(parts).strip()
         return ""
 
+    def _extract_reasoning_content(self, message: Any) -> str:
+        if not isinstance(message, dict):
+            return ""
+        reasoning = message.get("reasoning_content")
+        if isinstance(reasoning, str):
+            return reasoning.strip()
+        if isinstance(reasoning, list):
+            parts: list[str] = []
+            for item in reasoning:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+                elif isinstance(item, str) and item.strip():
+                    parts.append(item.strip())
+            return "\n".join(parts).strip()
+        return ""
+
+    def _emit_reasoning_event(
+        self,
+        event_cb: Callable[[dict[str, Any]], None] | None,
+        message: Any,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        reasoning = self._extract_reasoning_content(message)
+        if not reasoning:
+            return
+        self._emit_event(
+            event_cb,
+            {
+                "type": "llm_cot",
+                "text": reasoning,
+                "meta": meta or {},
+            },
+        )
+
     def _is_tools_unsupported_error(self, err_obj: Exception) -> bool:
         text = str(err_obj).lower()
         if "tool" not in text:
@@ -677,9 +700,8 @@ class LLMTranslator(Translator):
         content: str,
         *,
         expected_count: int,
-    ) -> tuple[list[str], list[dict[str, str]], str]:
-        think_cot, json_payload = self._extract_think_block(content)
-        data = self._load_json_object_robust(json_payload)
+    ) -> tuple[list[str], list[dict[str, str]]]:
+        data = self._load_json_object_robust(content)
         if not isinstance(data, dict):
             raise RuntimeError("JSON 顶层必须是对象")
 
@@ -717,7 +739,7 @@ class LLMTranslator(Translator):
                 if not src or not tgt:
                     continue
                 terms.append({"src": src, "tgt": tgt, "note": note})
-        return translations, terms, think_cot
+        return translations, terms
 
     def _strip_markdown_fence(self, text: str) -> str:
         s = text.strip()
@@ -750,16 +772,6 @@ class LLMTranslator(Translator):
             if isinstance(obj, dict):
                 return obj
         raise RuntimeError("JSON 解析失败：未找到有效 JSON 对象")
-
-    def _extract_think_block(self, content: str) -> tuple[str, str]:
-        text = content.strip()
-        pattern = re.compile(r"<think>(.*?)</think>", flags=re.IGNORECASE | re.DOTALL)
-        match = pattern.search(text)
-        if not match:
-            return "", text
-        think_text = match.group(1).strip()
-        cleaned = pattern.sub("", text, count=1).strip()
-        return think_text, cleaned
 
     def _project_root(self) -> Path:
         return Path(__file__).resolve().parents[2]

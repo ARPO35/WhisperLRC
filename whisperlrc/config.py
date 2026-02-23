@@ -27,6 +27,7 @@ class TranslationConfig:
     backend: str = "llm"
     target: str = "zh-Hans"
     llm_provider: str = "openai_compatible"
+    llm_enable_thinking: bool = True
     llm_model: str = ""
     llm_base_url: str = ""
     llm_api_key: str = ""

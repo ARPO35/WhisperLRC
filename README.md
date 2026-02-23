@@ -37,6 +37,7 @@ python main.py
 - `llm_model`
 - `llm_base_url`
 - `llm_api_key`
+- `llm_enable_thinking`（是否启用模型思考模式，默认 `true`）
 - `llm_prompt_file`（提示词文件路径，支持相对或绝对路径）
 - `llm_preferences_file`（翻译偏好文件路径，支持相对或绝对路径）
 - `llm_batch_size`（默认每组 10 句）
@@ -98,12 +99,12 @@ LLM 必须返回 JSON，格式要求如下（`terms` 可选）：
 
 ### 思考处理
 
-LLM 响应只支持 `<think>...</think>` 作为思考内容。
+LLM 思考内容从 `choices.message.reasoning_content` 读取。
 
 程序处理规则：
 - 思考内容会被提取用于运行时观测（处理中页面/调试）。
 - 思考内容不参与最终翻译结果写入。
-- 解析时会优先严格解析；若响应带有前后缀文本，会自动清洗并提取 JSON 对象。
+- 翻译 JSON 解析时会优先严格解析；若响应带有前后缀文本，会自动清洗并提取 JSON 对象。
 - 主流程仍以 `translations` 为必需字段，`terms` 为可选。
 
 ## LRC 导出与校对

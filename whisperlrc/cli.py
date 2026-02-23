@@ -1058,6 +1058,7 @@ def _render_config_edit_llm_page(state: SessionState) -> Page:
     section_obj = _get_section_obj(state.edit_cfg, "translation")
     llm_keys = [
         "llm_provider",
+        "llm_enable_thinking",
         "llm_model",
         "llm_base_url",
         "llm_api_key",
