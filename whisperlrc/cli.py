@@ -41,6 +41,10 @@ class SessionState:
     edit_section: str = "asr"
     edit_offset: int = 0
     edit_translation_llm_only: bool = False
+    edit_dirty: bool = False
+    edit_menu_cursor: int = 0
+    edit_field_cursor: int = 0
+    edit_llm_cursor: int = 0
     api_test_config: Path = Path()
     api_test_running: bool = False
     api_test_result_lines: list[str] = field(default_factory=list)
@@ -115,6 +119,49 @@ def _read_single_key(valid_keys: set[str], *, allow_esc: bool = True) -> str:
         if allow_esc and text == "\x1b":
             return "esc"
         return text if text in normalized else ""
+
+
+def _read_nav_key() -> str:
+    if os.name == "nt":
+        try:
+            import msvcrt
+
+            while True:
+                ch = msvcrt.getwch()
+                if not ch:
+                    continue
+                if ch in {"\x00", "\xe0"}:
+                    code = msvcrt.getwch()
+                    mapping = {
+                        "H": "up",
+                        "P": "down",
+                        "K": "left",
+                        "M": "right",
+                    }
+                    key = mapping.get(code.upper(), "")
+                    if key:
+                        return key
+                    continue
+                if ch in {"\r", "\n"}:
+                    return "enter"
+                if ch == "\x1b":
+                    return "esc"
+                if ch.lower() == "q":
+                    return "q"
+        except Exception:
+            pass
+
+    text = input().strip().lower()
+    fallback_map = {
+        "w": "up",
+        "s": "down",
+        "a": "left",
+        "d": "right",
+        "": "enter",
+        "q": "q",
+        "esc": "esc",
+    }
+    return fallback_map.get(text, "")
 
 
 def _read_line_with_cancel(label: str, default: str | None = None) -> LineInputResult:
@@ -195,6 +242,45 @@ def _read_key_nonblocking() -> str:
 def _print_path_bar(path: str) -> None:
     print(f"[{path}]")
     print()
+
+
+def _run_arrow_menu(
+    *,
+    path: str,
+    title: str,
+    options: list[str],
+    cursor: int = 0,
+    subtitle_lines: list[str] | None = None,
+) -> tuple[str, int]:
+    if not options:
+        return ("esc", 0)
+    idx = min(max(cursor, 0), len(options) - 1)
+    while True:
+        _clear_screen()
+        _print_path_bar(path)
+        print(title)
+        print("=" * len(title))
+        if subtitle_lines:
+            for line in subtitle_lines:
+                print(line)
+            print()
+        for i, text in enumerate(options):
+            marker = ">" if i == idx else " "
+            print(f"{marker} {text}")
+
+        key = _read_nav_key()
+        if key == "up":
+            idx = (idx - 1) % len(options)
+            continue
+        if key == "down":
+            idx = (idx + 1) % len(options)
+            continue
+        if key == "enter":
+            return ("enter", idx)
+        if key == "q":
+            return ("q", idx)
+        if key == "esc":
+            return ("esc", idx)
 
 
 def _safe_log_stem(file_name: str) -> str:
@@ -696,31 +782,119 @@ def _parse_field_value(section: str, field_name: str, current: Any, text: str) -
     raise ValueError("暂不支持该字段类型")
 
 
-def _render_main_page() -> Page | None:
-    _print_path_bar("主菜单")
-    print("WhisperLRC 主菜单")
-    print("===============")
-    print("1) 批处理")
-    print("2) 配置")
-    print("3) 检查")
-    print("4) 帮助")
-    print()
-    print("q 返回主菜单（当前位置），Esc 退出")
+FIELD_PRESETS: dict[str, list[Any]] = {
+    "asr.backend": ["faster_whisper"],
+    "asr.device": ["cuda", "cpu", "auto", "mps"],
+    "asr.compute_type": ["float16", "int8_float16", "int8", "float32", "bfloat16"],
+    "translation.backend": ["llm"],
+    "translation.llm_provider": ["openai_compatible"],
+    "output.json_ext": [".json"],
+}
 
-    key = _read_single_key({"1", "2", "3", "4", "q"}, allow_esc=True)
-    if key == "esc":
-        return None
-    if key == "q":
+
+def _apply_field_update(state: SessionState, section: str, section_obj: Any, field_name: str, value: Any) -> None:
+    setattr(section_obj, field_name, value)
+    state.edit_dirty = True
+    if section == "output" and field_name == "default_input_dir":
+        state.input_dir = Path(str(value))
+    if section == "output" and field_name == "default_output_dir":
+        state.output_dir = Path(str(value))
+
+
+def _reset_edit_session(state: SessionState) -> None:
+    state.edit_cfg = None
+    state.edit_section = "asr"
+    state.edit_offset = 0
+    state.edit_translation_llm_only = False
+    state.edit_dirty = False
+    state.edit_menu_cursor = 0
+    state.edit_field_cursor = 0
+    state.edit_llm_cursor = 0
+
+
+def _get_field_presets(section: str, field_name: str, value: Any) -> list[Any] | None:
+    if isinstance(value, bool):
+        return [False, True]
+    return FIELD_PRESETS.get(f"{section}.{field_name}")
+
+
+def _cycle_preset(values: list[Any], current: Any, delta: int) -> Any:
+    if not values:
+        return current
+    try:
+        idx = values.index(current)
+    except ValueError:
+        idx = 0
+    return values[(idx + delta) % len(values)]
+
+
+def _adjust_field_by_arrow(
+    *,
+    section: str,
+    section_obj: Any,
+    field_name: str,
+    direction: int,
+) -> tuple[bool, str]:
+    current = getattr(section_obj, field_name)
+    if isinstance(current, int):
+        new_value = max(0, current + direction)
+        setattr(section_obj, field_name, new_value)
+        return (True, f"{field_name} = {new_value}")
+
+    presets = _get_field_presets(section, field_name, current)
+    if presets is None:
+        return (False, f"{field_name} 不支持左右调整")
+    new_value = _cycle_preset(presets, current, direction)
+    setattr(section_obj, field_name, new_value)
+    return (True, f"{field_name} = {_format_value_for_menu(new_value)}")
+
+
+def _confirm_exit_config_edit(state: SessionState, *, exit_page: Page, stay_page: Page) -> Page:
+    if state.edit_cfg is None:
+        return exit_page
+    if not state.edit_dirty:
+        _reset_edit_session(state)
+        return exit_page
+
+    _clear_screen()
+    _print_path_bar("主菜单->配置->修改配置项->退出确认")
+    confirm = _confirm_action(f"检测到未保存修改，是否写入 {state.config_path}？")
+    if confirm == "q":
+        _reset_edit_session(state)
         return Page.MAIN
-    if key == "1":
-        return Page.BATCH
-    if key == "2":
-        return Page.CONFIG
-    if key == "3":
-        return Page.CHECK
-    if key == "4":
-        return Page.HELP
-    return Page.MAIN
+    if confirm == "esc":
+        return stay_page
+    if confirm == "y":
+        try:
+            save_config(state.config_path, state.edit_cfg)
+            _reset_edit_session(state)
+            return exit_page
+        except Exception as e:
+            return _show_info(
+                state,
+                "配置结果",
+                [f"保存失败：{e}"],
+                stay_page,
+                "主菜单->配置->修改配置项->配置结果",
+            )
+    _reset_edit_session(state)
+    return exit_page
+
+
+def _render_main_page() -> Page | None:
+    options = ["批处理", "配置", "检查", "帮助"]
+    action, idx = _run_arrow_menu(path="主菜单", title="WhisperLRC 主菜单", options=options)
+    if action == "esc":
+        return None
+    if action == "q":
+        return Page.MAIN
+    mapping = {
+        0: Page.BATCH,
+        1: Page.CONFIG,
+        2: Page.CHECK,
+        3: Page.HELP,
+    }
+    return mapping.get(idx, Page.MAIN)
 
 
 def _render_batch_page(state: SessionState) -> Page:
@@ -728,22 +902,18 @@ def _render_batch_page(state: SessionState) -> Page:
     if state.batch_running:
         return Page.PROCESSING
 
-    _print_path_bar("主菜单->批处理")
-    print("批处理页面")
-    print("==========")
-    print("1) 使用当前会话默认参数执行")
-    print("2) 自定义本次路径并执行")
-    print("3) 查看当前运行参数")
-    print()
-    print("q 主菜单，Esc 返回")
-
-    key = _read_single_key({"1", "2", "3", "q"}, allow_esc=True)
-    if key == "q":
+    options = [
+        "使用当前会话默认参数执行",
+        "自定义本次路径并执行",
+        "查看当前运行参数",
+    ]
+    action, idx = _run_arrow_menu(path="主菜单->批处理", title="批处理页面", options=options)
+    if action == "q":
         return Page.MAIN
-    if key == "esc":
+    if action == "esc":
         return Page.MAIN
 
-    if key == "1":
+    if idx == 0:
         confirm = _confirm_action("确认开始执行？")
         if confirm == "q":
             return Page.MAIN
@@ -757,7 +927,7 @@ def _render_batch_page(state: SessionState) -> Page:
         )
         return Page.PROCESSING
 
-    if key == "2":
+    if idx == 1:
         input_res = _read_line_with_cancel("输入目录", str(state.input_dir))
         if input_res.kind == "main":
             return Page.MAIN
@@ -789,7 +959,7 @@ def _render_batch_page(state: SessionState) -> Page:
         )
         return Page.PROCESSING
 
-    if key == "3":
+    if idx == 2:
         lines = [
             f"输入目录：{state.input_dir}",
             f"输出目录：{state.output_dir}",
@@ -801,39 +971,39 @@ def _render_batch_page(state: SessionState) -> Page:
 
 
 def _render_config_page(state: SessionState) -> Page:
-    _print_path_bar("主菜单->配置")
-    print("配置页面")
-    print("========")
-    print("1) 查看当前配置摘要")
-    print("2) 修改配置项")
-    print("3) 切换会话配置文件路径")
-    print("4) 重置会话配置为 settings.toml")
-    print()
-    print("q 主菜单，Esc 返回")
-
-    key = _read_single_key({"1", "2", "3", "4", "q"}, allow_esc=True)
-    if key == "q":
+    options = [
+        "查看当前配置摘要",
+        "修改配置项",
+        "切换会话配置文件路径",
+        "重置会话配置为 settings.toml",
+    ]
+    action, idx = _run_arrow_menu(path="主菜单->配置", title="配置页面", options=options)
+    if action == "q":
         return Page.MAIN
-    if key == "esc":
+    if action == "esc":
         return Page.MAIN
 
-    if key == "1":
+    if idx == 0:
         try:
             return _show_info(state, "当前配置摘要", _build_config_summary(state.config_path), Page.CONFIG, "主菜单->配置->当前配置摘要")
         except Exception as e:
             return _show_info(state, "当前配置摘要", [f"读取失败：{e}"], Page.CONFIG, "主菜单->配置->当前配置摘要")
 
-    if key == "2":
+    if idx == 1:
         try:
             state.edit_cfg = load_config(state.config_path)
             state.edit_section = "asr"
             state.edit_offset = 0
             state.edit_translation_llm_only = False
+            state.edit_dirty = False
+            state.edit_menu_cursor = 0
+            state.edit_field_cursor = 0
+            state.edit_llm_cursor = 0
             return Page.CONFIG_EDIT_MENU
         except Exception as e:
             return _show_info(state, "配置结果", [f"加载配置失败：{e}"], Page.CONFIG, "主菜单->配置->配置结果")
 
-    if key == "3":
+    if idx == 2:
         config_res = _read_line_with_cancel("配置文件路径", str(state.config_path))
         if config_res.kind == "main":
             return Page.MAIN
@@ -858,7 +1028,7 @@ def _render_config_page(state: SessionState) -> Page:
         except Exception as e:
             return _show_info(state, "配置结果", [f"已更新会话配置：{state.config_path}", f"加载默认路径失败：{e}"], Page.CONFIG, "主菜单->配置->配置结果")
 
-    if key == "4":
+    if idx == 3:
         state.config_path = Path("settings.toml")
         try:
             cfg = load_config(state.config_path)
@@ -881,35 +1051,31 @@ def _render_config_page(state: SessionState) -> Page:
 
 
 def _render_check_page(state: SessionState) -> Page:
-    _print_path_bar("主菜单->检查")
-    print("检查页面")
-    print("========")
-    print("1) 检查当前会话配置的翻译后端")
-    print("2) API 测试")
-    print("3) 使用自定义配置文件检查")
-    print("4) 使用自定义配置做 API 测试")
-    print("5) 从默认输出目录导出 LRC")
-    print("6) 从 JSON 路径导出 LRC")
-    print()
-    print("q 主菜单，Esc 返回")
-
-    key = _read_single_key({"1", "2", "3", "4", "5", "6", "q"}, allow_esc=True)
-    if key == "q":
+    options = [
+        "检查当前会话配置的翻译后端",
+        "API 测试",
+        "使用自定义配置文件检查",
+        "使用自定义配置做 API 测试",
+        "从默认输出目录导出 LRC",
+        "从 JSON 路径导出 LRC",
+    ]
+    action, idx = _run_arrow_menu(path="主菜单->检查", title="检查页面", options=options)
+    if action == "q":
         return Page.MAIN
-    if key == "esc":
+    if action == "esc":
         return Page.MAIN
 
-    if key == "1":
+    if idx == 0:
         try:
             return _show_info(state, "翻译后端检查", _build_translation_check(state.config_path), Page.CHECK, "主菜单->检查->翻译后端检查")
         except Exception as e:
             return _show_info(state, "翻译后端检查", [f"检查失败：{e}"], Page.CHECK, "主菜单->检查->翻译后端检查")
 
-    if key == "2":
+    if idx == 1:
         _start_api_test(state, state.config_path)
         return Page.API_TEST
 
-    if key == "3":
+    if idx == 2:
         config_res = _read_line_with_cancel("配置文件路径", str(state.config_path))
         if config_res.kind == "main":
             return Page.MAIN
@@ -920,7 +1086,7 @@ def _render_check_page(state: SessionState) -> Page:
         except Exception as e:
             return _show_info(state, "翻译后端检查", [f"检查失败：{e}"], Page.CHECK, "主菜单->检查->翻译后端检查")
 
-    if key == "4":
+    if idx == 3:
         config_res = _read_line_with_cancel("配置文件路径", str(state.config_path))
         if config_res.kind == "main":
             return Page.MAIN
@@ -929,7 +1095,7 @@ def _render_check_page(state: SessionState) -> Page:
         _start_api_test(state, Path(config_res.value))
         return Page.API_TEST
 
-    if key == "5":
+    if idx == 4:
         try:
             source_path = state.output_dir
             lines = _build_export_lrc_result(source_path, output_dir=source_path)
@@ -937,7 +1103,7 @@ def _render_check_page(state: SessionState) -> Page:
         except Exception as e:
             return _show_info(state, "LRC 导出", [f"导出失败：{e}"], Page.CHECK, "主菜单->检查->LRC导出")
 
-    if key == "6":
+    if idx == 5:
         path_res = _read_line_with_cancel("JSON 文件或目录路径", str(state.output_dir))
         if path_res.kind == "main":
             return Page.MAIN
@@ -958,63 +1124,38 @@ def _render_check_page(state: SessionState) -> Page:
 
 
 def _render_config_edit_menu_page(state: SessionState) -> Page:
-    _print_path_bar("主菜单->配置->修改配置项")
-    print("配置分区")
-    print("========")
-    print("1) ASR")
-    print("2) 管线")
-    print("3) 翻译基础")
-    print("4) LLM 配置")
-    print("5) 输出")
-    print("6) Schema")
-    print("7) 保存并写入当前配置文件")
-    print("8) 放弃本次修改")
-    print()
-    print("q 主菜单，Esc 返回")
-
-    key = _read_single_key({"1", "2", "3", "4", "5", "6", "7", "8", "q"}, allow_esc=True)
-    if key == "q":
-        return Page.MAIN
-    if key == "esc":
-        return Page.CONFIG
     if state.edit_cfg is None:
         return _show_info(state, "配置结果", ["未加载配置，请重新进入修改页面。"], Page.CONFIG, "主菜单->配置->配置结果")
 
-    if key in {"1", "2", "3", "5", "6"}:
-        mapping = {"1": "asr", "2": "pipeline", "3": "translation", "5": "output", "6": "schema"}
-        state.edit_section = mapping[key]
+    options = ["ASR", "管线", "翻译基础", "LLM 配置", "输出", "Schema", "返回上级"]
+    action, idx = _run_arrow_menu(
+        path="主菜单->配置->修改配置项",
+        title="配置分区",
+        options=options,
+        cursor=state.edit_menu_cursor,
+    )
+    state.edit_menu_cursor = idx
+    if action == "q":
+        return _confirm_exit_config_edit(state, exit_page=Page.MAIN, stay_page=Page.CONFIG_EDIT_MENU)
+    if action == "esc":
+        return _confirm_exit_config_edit(state, exit_page=Page.CONFIG, stay_page=Page.CONFIG_EDIT_MENU)
+    if idx == 6:
+        return _confirm_exit_config_edit(state, exit_page=Page.CONFIG, stay_page=Page.CONFIG_EDIT_MENU)
+
+    if idx in {0, 1, 2, 4, 5}:
+        mapping = {0: "asr", 1: "pipeline", 2: "translation", 4: "output", 5: "schema"}
+        state.edit_section = mapping[idx]
         state.edit_offset = 0
         state.edit_translation_llm_only = False
+        state.edit_field_cursor = 0
         return Page.CONFIG_EDIT_FIELDS
 
-    if key == "4":
+    if idx == 3:
         state.edit_section = "translation"
         state.edit_offset = 0
         state.edit_translation_llm_only = True
+        state.edit_llm_cursor = 0
         return Page.CONFIG_EDIT_LLM
-
-    if key == "7":
-        confirm = _confirm_action(f"确认写入配置文件 {state.config_path}？")
-        if confirm == "q":
-            return Page.MAIN
-        if confirm != "y":
-            return _show_info(state, "配置结果", ["已取消保存。"], Page.CONFIG_EDIT_MENU, "主菜单->配置->修改配置项->配置结果")
-        try:
-            save_config(state.config_path, state.edit_cfg)
-            return _show_info(state, "配置结果", [f"已保存到：{state.config_path}"], Page.CONFIG_EDIT_MENU, "主菜单->配置->修改配置项->配置结果")
-        except Exception as e:
-            return _show_info(state, "配置结果", [f"保存失败：{e}"], Page.CONFIG_EDIT_MENU, "主菜单->配置->修改配置项->配置结果")
-
-    if key == "8":
-        confirm = _confirm_action("确认放弃本次未保存修改？")
-        if confirm == "q":
-            return Page.MAIN
-        if confirm != "y":
-            return Page.CONFIG_EDIT_MENU
-        state.edit_cfg = None
-        state.edit_section = "asr"
-        state.edit_offset = 0
-        return _show_info(state, "配置结果", ["已放弃本次修改。"], Page.CONFIG, "主菜单->配置->配置结果")
 
     return Page.CONFIG_EDIT_MENU
 
@@ -1023,93 +1164,89 @@ def _render_config_edit_fields_page(state: SessionState) -> Page:
     if state.edit_cfg is None:
         return _show_info(state, "配置结果", ["未加载配置，请重新进入修改页面。"], Page.CONFIG, "主菜单->配置->配置结果")
 
-    section = state.edit_section
-    section_obj = _get_section_obj(state.edit_cfg, section)
-    all_items: list[tuple[str, Any]] = list(section_obj.__dict__.items())
-    if section == "translation" and not state.edit_translation_llm_only:
-        items = [(k, v) for k, v in all_items if (not k.startswith("llm_")) and k != "timeout_sec"]
-    else:
-        items = all_items
-    page_size = 7
-    offset = state.edit_offset
-    visible = items[offset : offset + page_size]
-    has_prev = offset > 0
-    has_next = offset + page_size < len(items)
+    notice = ""
+    while True:
+        section = state.edit_section
+        section_obj = _get_section_obj(state.edit_cfg, section)
+        all_items: list[tuple[str, Any]] = list(section_obj.__dict__.items())
+        if section == "translation" and not state.edit_translation_llm_only:
+            items = [(k, v) for k, v in all_items if (not k.startswith("llm_")) and k != "timeout_sec"]
+        else:
+            items = all_items
+        if not items:
+            return _show_info(
+                state,
+                "配置结果",
+                ["当前分区没有可编辑字段。"],
+                Page.CONFIG_EDIT_MENU,
+                "主菜单->配置->修改配置项->配置结果",
+            )
 
-    _print_path_bar(f"主菜单->配置->修改配置项->{SECTION_TITLES.get(section, section)}")
-    print(f"{SECTION_TITLES.get(section, section)} 字段编辑")
-    print("==============")
-    for idx, (name, value) in enumerate(visible, start=1):
-        print(f"{idx}) {name} = {_format_value_for_menu(value)}")
-    if has_prev:
-        print("8) 上一页")
-    if has_next:
-        print("9) 下一页")
-    print()
-    print("q 主菜单，Esc 返回")
+        state.edit_field_cursor = min(max(0, state.edit_field_cursor), len(items) - 1)
+        _clear_screen()
+        _print_path_bar(f"主菜单->配置->修改配置项->{SECTION_TITLES.get(section, section)}")
+        print(f"{SECTION_TITLES.get(section, section)} 字段编辑")
+        print("==============")
+        if notice:
+            print(notice)
+            print()
+        for i, (name, value) in enumerate(items):
+            marker = ">" if i == state.edit_field_cursor else " "
+            print(f"{marker} {name} = {_format_value_for_menu(value)}")
 
-    valid_keys = {str(i) for i in range(1, len(visible) + 1)} | {"q"}
-    if has_prev:
-        valid_keys.add("8")
-    if has_next:
-        valid_keys.add("9")
-    key = _read_single_key(valid_keys, allow_esc=True)
-    if key == "q":
-        return Page.MAIN
-    if key == "esc":
-        return Page.CONFIG_EDIT_MENU
-    if key == "8" and has_prev:
-        state.edit_offset = max(0, offset - page_size)
-        return Page.CONFIG_EDIT_FIELDS
-    if key == "9" and has_next:
-        state.edit_offset = offset + page_size
-        return Page.CONFIG_EDIT_FIELDS
-
-    if key.isdigit():
-        selected = int(key)
-        if 1 <= selected <= len(visible):
-            field_name, current = visible[selected - 1]
+        key = _read_nav_key()
+        if key == "up":
+            state.edit_field_cursor = (state.edit_field_cursor - 1) % len(items)
+            continue
+        if key == "down":
+            state.edit_field_cursor = (state.edit_field_cursor + 1) % len(items)
+            continue
+        if key in {"left", "right"}:
+            field_name, _current = items[state.edit_field_cursor]
+            delta = -1 if key == "left" else 1
+            ok, msg = _adjust_field_by_arrow(
+                section=section,
+                section_obj=section_obj,
+                field_name=field_name,
+                direction=delta,
+            )
+            if ok:
+                new_value = getattr(section_obj, field_name)
+                if isinstance(new_value, int):
+                    new_value = max(0, new_value)
+                    _apply_field_update(state, section, section_obj, field_name, new_value)
+                else:
+                    _apply_field_update(state, section, section_obj, field_name, new_value)
+                notice = f"已更新 {msg}"
+            else:
+                notice = msg
+            continue
+        if key == "enter":
+            field_name, current = items[state.edit_field_cursor]
             value_res = _read_line_with_cancel(f"新值 {field_name}", str(current))
             if value_res.kind == "main":
-                return Page.MAIN
+                return _confirm_exit_config_edit(state, exit_page=Page.MAIN, stay_page=Page.CONFIG_EDIT_FIELDS)
             if value_res.kind != "value":
-                return _show_info(
-                    state,
-                    "配置结果",
-                    [f"已取消修改 {field_name}。"],
-                    Page.CONFIG_EDIT_FIELDS,
-                    f"主菜单->配置->修改配置项->{SECTION_TITLES.get(section, section)}->配置结果",
-                )
+                notice = f"已取消修改 {field_name}"
+                continue
             try:
                 new_value = _parse_field_value(section, field_name, current, value_res.value)
-                setattr(section_obj, field_name, new_value)
-                if section == "output" and field_name == "default_input_dir":
-                    state.input_dir = Path(str(new_value))
-                if section == "output" and field_name == "default_output_dir":
-                    state.output_dir = Path(str(new_value))
-                return _show_info(
-                    state,
-                    "配置结果",
-                    [f"已更新 {field_name} = {_format_value_for_menu(new_value)}", "提示：当前仅在内存，需在“保存并写入”后落盘。"],
-                    Page.CONFIG_EDIT_FIELDS,
-                    f"主菜单->配置->修改配置项->{SECTION_TITLES.get(section, section)}->配置结果",
-                )
+                _apply_field_update(state, section, section_obj, field_name, new_value)
+                notice = f"已更新 {field_name} = {_format_value_for_menu(new_value)}"
             except Exception as e:
-                return _show_info(
-                    state,
-                    "配置结果",
-                    [f"更新失败：{e}"],
-                    Page.CONFIG_EDIT_FIELDS,
-                    f"主菜单->配置->修改配置项->{SECTION_TITLES.get(section, section)}->配置结果",
-                )
-    return Page.CONFIG_EDIT_FIELDS
+                notice = f"更新失败：{e}"
+            continue
+        if key == "q":
+            return _confirm_exit_config_edit(state, exit_page=Page.MAIN, stay_page=Page.CONFIG_EDIT_FIELDS)
+        if key == "esc":
+            return Page.CONFIG_EDIT_MENU
 
 
 def _render_config_edit_llm_page(state: SessionState) -> Page:
     if state.edit_cfg is None:
         return _show_info(state, "配置结果", ["未加载配置，请重新进入修改页面。"], Page.CONFIG, "主菜单->配置->配置结果")
 
-    section_obj = _get_section_obj(state.edit_cfg, "translation")
+    notice = ""
     llm_keys = [
         "llm_provider",
         "llm_enable_thinking",
@@ -1122,61 +1259,68 @@ def _render_config_edit_llm_page(state: SessionState) -> Page:
         "llm_context_window",
         "timeout_sec",
     ]
-    items: list[tuple[str, Any]] = [(k, getattr(section_obj, k)) for k in llm_keys]
+    while True:
+        section_obj = _get_section_obj(state.edit_cfg, "translation")
+        items: list[tuple[str, Any]] = [(k, getattr(section_obj, k)) for k in llm_keys]
+        state.edit_llm_cursor = min(max(0, state.edit_llm_cursor), len(items) - 1)
 
-    _print_path_bar("主菜单->配置->修改配置项->LLM配置")
-    print("LLM 配置")
-    print("==============")
-    for idx, (name, value) in enumerate(items, start=1):
-        print(f"{idx}) {name} = {_format_value_for_menu(value)}")
-    print()
-    if len(items) >= 10:
-        print("提示：按 0 选择第 10 项")
-    print("q 主菜单，Esc 返回")
+        _clear_screen()
+        _print_path_bar("主菜单->配置->修改配置项->LLM配置")
+        print("LLM 配置")
+        print("==============")
+        if notice:
+            print(notice)
+            print()
+        for i, (name, value) in enumerate(items):
+            marker = ">" if i == state.edit_llm_cursor else " "
+            print(f"{marker} {name} = {_format_value_for_menu(value)}")
 
-    valid_keys = {str(i) for i in range(1, min(len(items), 9) + 1)} | {"q"}
-    if len(items) >= 10:
-        valid_keys.add("0")
-    key = _read_single_key(valid_keys, allow_esc=True)
-    if key == "q":
-        return Page.MAIN
-    if key == "esc":
-        return Page.CONFIG_EDIT_MENU
-
-    if key.isdigit():
-        selected = 10 if key == "0" and len(items) >= 10 else int(key)
-        if 1 <= selected <= len(items):
-            field_name, current = items[selected - 1]
+        key = _read_nav_key()
+        if key == "up":
+            state.edit_llm_cursor = (state.edit_llm_cursor - 1) % len(items)
+            continue
+        if key == "down":
+            state.edit_llm_cursor = (state.edit_llm_cursor + 1) % len(items)
+            continue
+        if key in {"left", "right"}:
+            field_name, _current = items[state.edit_llm_cursor]
+            delta = -1 if key == "left" else 1
+            ok, msg = _adjust_field_by_arrow(
+                section="translation",
+                section_obj=section_obj,
+                field_name=field_name,
+                direction=delta,
+            )
+            if ok:
+                new_value = getattr(section_obj, field_name)
+                if isinstance(new_value, int):
+                    new_value = max(0, new_value)
+                    _apply_field_update(state, "translation", section_obj, field_name, new_value)
+                else:
+                    _apply_field_update(state, "translation", section_obj, field_name, new_value)
+                notice = f"已更新 {msg}"
+            else:
+                notice = msg
+            continue
+        if key == "enter":
+            field_name, current = items[state.edit_llm_cursor]
             value_res = _read_line_with_cancel(f"新值 {field_name}", str(current))
             if value_res.kind == "main":
-                return Page.MAIN
+                return _confirm_exit_config_edit(state, exit_page=Page.MAIN, stay_page=Page.CONFIG_EDIT_LLM)
             if value_res.kind != "value":
-                return _show_info(
-                    state,
-                    "配置结果",
-                    [f"已取消修改 {field_name}。"],
-                    Page.CONFIG_EDIT_LLM,
-                    "主菜单->配置->修改配置项->LLM配置->配置结果",
-                )
+                notice = f"已取消修改 {field_name}"
+                continue
             try:
                 new_value = _parse_field_value("translation", field_name, current, value_res.value)
-                setattr(section_obj, field_name, new_value)
-                return _show_info(
-                    state,
-                    "配置结果",
-                    [f"已更新 {field_name} = {_format_value_for_menu(new_value)}", "提示：当前仅在内存，需在“保存并写入”后落盘。"],
-                    Page.CONFIG_EDIT_LLM,
-                    "主菜单->配置->修改配置项->LLM配置->配置结果",
-                )
+                _apply_field_update(state, "translation", section_obj, field_name, new_value)
+                notice = f"已更新 {field_name} = {_format_value_for_menu(new_value)}"
             except Exception as e:
-                return _show_info(
-                    state,
-                    "配置结果",
-                    [f"更新失败：{e}"],
-                    Page.CONFIG_EDIT_LLM,
-                    "主菜单->配置->修改配置项->LLM配置->配置结果",
-                )
-    return Page.CONFIG_EDIT_LLM
+                notice = f"更新失败：{e}"
+            continue
+        if key == "q":
+            return _confirm_exit_config_edit(state, exit_page=Page.MAIN, stay_page=Page.CONFIG_EDIT_LLM)
+        if key == "esc":
+            return Page.CONFIG_EDIT_MENU
 
 
 def _render_processing_page(state: SessionState) -> Page:
@@ -1185,7 +1329,7 @@ def _render_processing_page(state: SessionState) -> Page:
         print("处理页面")
         print("========")
         print(state.batch_running_path or "（未设置）")
-        print("日志正在滚动输出，Esc 取消并返回，q 返回主菜单")
+        print("日志正在滚动输出")
         print()
         state.batch_processing_header_printed = True
 
@@ -1234,7 +1378,6 @@ def _render_api_test_page(state: SessionState) -> Page:
             print("========")
             print(f"配置文件：{state.api_test_config}")
             print("正在测试，请稍候...")
-            print("Esc 返回上级，q 主菜单")
             key = _read_key_nonblocking()
             if key == "esc":
                 return Page.CHECK
@@ -1248,7 +1391,6 @@ def _render_api_test_page(state: SessionState) -> Page:
         for line in state.api_test_result_lines or ["测试已结束。"]:
             print(line)
         print()
-        print("Esc 返回上级，q 主菜单")
         key = _read_single_key({"q"}, allow_esc=True)
         if key == "q":
             return Page.MAIN
@@ -1260,18 +1402,16 @@ def _render_help_page() -> Page:
     _print_path_bar("主菜单->帮助")
     print("帮助页面")
     print("========")
-    print("- 数字键：即时执行当前页面选项")
+    print("- 菜单：方向键上下移动，回车确认")
     print("- q：返回主菜单")
     print("- Esc：全局返回（在主菜单中 Esc 退出）")
-    print("- 关键动作会要求 y/n 二次确认")
+    print("- 配置页面退出时会要求 y/n 确认是否写入")
     print("- 信息结果以单独页面展示，Esc 关闭")
     print("- 提示词和翻译偏好文件路径可在配置中设置")
     print("- 在 prompt.txt 中可使用 {perf} 插入偏好字典")
     print("- role=user 只发送 {input}，prompt.txt 不再强制包含 {input}")
     print("- 检查页面支持 API 测试")
     print("- 检查页面支持从 JSON 导出 LRC")
-    print()
-    print("q 主菜单，Esc 返回")
 
     key = _read_single_key({"q"}, allow_esc=True)
     if key in {"q", "esc"}:
@@ -1285,8 +1425,6 @@ def _render_info_page(state: SessionState) -> Page:
     print("=" * len(state.info_title))
     for line in state.info_lines:
         print(line)
-    print()
-    print("Esc 返回，q 主菜单")
 
     key = _read_single_key({"q"}, allow_esc=True)
     if key == "q":
