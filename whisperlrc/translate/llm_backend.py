@@ -351,6 +351,7 @@ class LLMTranslator(Translator):
         used_calls = 0
         per_index_calls: dict[int, int] = {}
         tools_enabled = True
+        finalize_user_sent = False
 
         for round_idx in range(1, self.TOOL_MAX_ROUNDS + 1):
             req_payload: dict[str, Any] = {
@@ -389,6 +390,7 @@ class LLMTranslator(Translator):
             tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
             if tools_enabled and isinstance(tool_calls, list) and tool_calls:
                 force_finalize = False
+                finalize_reason = ""
                 assistant_tool_call = {
                     "role": "assistant",
                     "content": message.get("content"),
@@ -418,6 +420,10 @@ class LLMTranslator(Translator):
                             "error": f"工具调用已达上限 {self.TOOL_MAX_CALLS_PER_GROUP}",
                         }
                         force_finalize = True
+                        if not finalize_reason:
+                            finalize_reason = (
+                                f"工具调用总次数已超限（当前 {used_calls} / 上限 {self.TOOL_MAX_CALLS_PER_GROUP}）。"
+                            )
                     elif (
                         call_index is not None
                         and per_index_calls.get(call_index, 0) >= self.TOOL_MAX_CALLS_PER_INDEX
@@ -428,6 +434,10 @@ class LLMTranslator(Translator):
                             "index": call_index,
                         }
                         force_finalize = True
+                        if not finalize_reason:
+                            finalize_reason = (
+                                f"句子 index={call_index} 重听次数已超限（上限 {self.TOOL_MAX_CALLS_PER_INDEX}）。"
+                            )
                     else:
                         result_obj = self._execute_tool_call(
                             call_name=call_name,
@@ -459,6 +469,25 @@ class LLMTranslator(Translator):
                     )
                 if force_finalize:
                     tools_enabled = False
+                    if not finalize_user_sent:
+                        finalize_notice = self._build_tool_limit_finalize_user_message(
+                            finalize_reason or "工具调用已达到限制。"
+                        )
+                        self._emit_event(
+                            event_cb,
+                            {
+                                "type": "llm_tool_error",
+                                "text": finalize_notice,
+                                "meta": round_meta,
+                            },
+                        )
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": finalize_notice,
+                            }
+                        )
+                        finalize_user_sent = True
                 continue
 
             content = self._message_content_to_text(message.get("content"))
@@ -533,6 +562,15 @@ class LLMTranslator(Translator):
             return int(raw_idx)
         except Exception:
             return None
+
+    def _build_tool_limit_finalize_user_message(self, reason: str) -> str:
+        reason_line = reason.strip() if reason.strip() else "工具调用已达到限制。"
+        return (
+            f"{reason_line}\n"
+            "请不要再调用任何工具。"
+            "请仅根据当前已有信息直接输出最终 JSON 结果。"
+            "输出必须是约定结构，不能包含额外解释。"
+        )
 
     def _message_content_to_text(self, content: Any) -> str:
         if isinstance(content, str):
