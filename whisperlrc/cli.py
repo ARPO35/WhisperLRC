@@ -1130,16 +1130,21 @@ def _render_config_edit_llm_page(state: SessionState) -> Page:
     for idx, (name, value) in enumerate(items, start=1):
         print(f"{idx}) {name} = {_format_value_for_menu(value)}")
     print()
+    if len(items) >= 10:
+        print("提示：按 0 选择第 10 项")
     print("q 主菜单，Esc 返回")
 
-    key = _read_single_key({str(i) for i in range(1, len(items) + 1)} | {"q"}, allow_esc=True)
+    valid_keys = {str(i) for i in range(1, min(len(items), 9) + 1)} | {"q"}
+    if len(items) >= 10:
+        valid_keys.add("0")
+    key = _read_single_key(valid_keys, allow_esc=True)
     if key == "q":
         return Page.MAIN
     if key == "esc":
         return Page.CONFIG_EDIT_MENU
 
     if key.isdigit():
-        selected = int(key)
+        selected = 10 if key == "0" and len(items) >= 10 else int(key)
         if 1 <= selected <= len(items):
             field_name, current = items[selected - 1]
             value_res = _read_line_with_cancel(f"新值 {field_name}", str(current))
