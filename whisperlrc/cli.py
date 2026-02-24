@@ -371,17 +371,9 @@ def _state_snapshot(state: SessionState) -> dict[str, Any]:
     }
 
 
-def _ensure_unique_log_path(output_dir: Path, stem: str) -> Path:
+def _build_log_path(output_dir: Path, stem: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    candidate = output_dir / f"{stem}.log"
-    if not candidate.exists():
-        return candidate
-    i = 1
-    while True:
-        candidate = output_dir / f"{stem}_{i}.log"
-        if not candidate.exists():
-            return candidate
-        i += 1
+    return output_dir / f"{stem}.log"
 
 
 def _close_current_log_file(state: SessionState) -> None:
@@ -399,7 +391,7 @@ def _open_current_log_file(state: SessionState, file_name: str) -> None:
     _close_current_log_file(state)
     try:
         output_dir = state.batch_output_dir or state.output_dir
-        log_path = _ensure_unique_log_path(output_dir, _safe_log_stem(file_name))
+        log_path = _build_log_path(output_dir, _safe_log_stem(file_name))
         fp = log_path.open("w", encoding="utf-8")
         state.batch_current_log_path = log_path
         state.batch_current_log_fp = fp
@@ -582,6 +574,35 @@ def _consume_batch_events(state: SessionState) -> None:
         if etype == "asr_output":
             _append_batch_log(state, "[ASR输出]")
             _append_batch_log(state, str(event.get("text", "")).strip() or "（空）")
+            continue
+        if etype == "json_cache_resume_loaded":
+            _append_batch_log(state, "[缓存恢复]")
+            _append_batch_log(
+                state,
+                f"已加载 {event.get('path', '')} | 已完成句子 {event.get('completed_sentences', 0)}/{event.get('total_sentences', 0)}",
+            )
+            continue
+        if etype == "json_cache_resume_mismatch":
+            _append_batch_log(state, "[缓存恢复]")
+            _append_batch_log(state, f"跳过缓存：{event.get('reason', '未知原因')}")
+            continue
+        if etype == "json_cache_init_written":
+            _append_batch_log(state, "[JSON缓存]")
+            _append_batch_log(state, f"ASR首写：{event.get('path', '')}")
+            continue
+        if etype == "json_cache_group_written":
+            _append_batch_log(state, "[JSON缓存]")
+            _append_batch_log(
+                state,
+                f"分组回写：{event.get('path', '')} | 进度 {event.get('translated_sentences', 0)}/{event.get('total_sentences', 0)}",
+            )
+            continue
+        if etype == "json_cache_final_written":
+            _append_batch_log(state, "[JSON缓存]")
+            _append_batch_log(
+                state,
+                f"最终写入：{event.get('path', '')} | 状态={event.get('status', '')}",
+            )
             continue
         if etype == "translation_group_start":
             state.batch_group_index = int(event.get("group_index", 0))

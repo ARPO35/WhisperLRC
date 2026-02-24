@@ -88,12 +88,16 @@ class WhisperRelistenExecutor:
 
     def _get_model(self) -> WhisperModel:
         if self._model is None:
-            asr_cfg = self.ctx.asr_config
-            self._model = WhisperModel(
-                model_size_or_path=asr_cfg.model,
-                device=asr_cfg.device,
-                compute_type=asr_cfg.compute_type,
-            )
+            shared = self.ctx.shared_model
+            if isinstance(shared, WhisperModel):
+                self._model = shared
+            else:
+                asr_cfg = self.ctx.asr_config
+                self._model = WhisperModel(
+                    model_size_or_path=asr_cfg.model,
+                    device=asr_cfg.device,
+                    compute_type=asr_cfg.compute_type,
+                )
         return self._model
 
     def _decode_candidates(self, clip_audio: Any) -> list[str]:

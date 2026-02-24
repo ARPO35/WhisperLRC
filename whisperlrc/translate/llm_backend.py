@@ -82,6 +82,17 @@ class LLMTranslator(Translator):
             self._emit_event(
                 event_cb,
                 {
+                    "type": "translation_group_result",
+                    "group_index": group_index,
+                    "total_groups": total_groups,
+                    "group_start": group_start,
+                    "group_size": len(group_texts),
+                    "translations": translated,
+                },
+            )
+            self._emit_event(
+                event_cb,
+                {
                     "type": "translation_group_end",
                     "group_index": group_index,
                     "total_groups": total_groups,

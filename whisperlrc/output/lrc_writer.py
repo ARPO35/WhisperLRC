@@ -5,17 +5,9 @@ from pathlib import Path
 from typing import Any
 
 
-def _ensure_unique_lrc_path(output_dir: Path, basename: str, ext: str = ".lrc") -> Path:
+def _build_lrc_path(output_dir: Path, basename: str, ext: str = ".lrc") -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    candidate = output_dir / f"{basename}{ext}"
-    if not candidate.exists():
-        return candidate
-    i = 1
-    while True:
-        candidate = output_dir / f"{basename}_{i}{ext}"
-        if not candidate.exists():
-            return candidate
-        i += 1
+    return output_dir / f"{basename}{ext}"
 
 
 def format_lrc_time(seconds: float) -> str:
@@ -64,8 +56,9 @@ def build_lrc_lines(sentences: list[Any]) -> list[str]:
 
 
 def write_lrc(*, output_dir: Path, base_name: str, sentences: list[Any]) -> Path:
-    out_path = _ensure_unique_lrc_path(output_dir, base_name, ".lrc")
+    out_path = _build_lrc_path(output_dir, base_name, ".lrc")
     lrc_text = "\n".join(build_lrc_lines(sentences)).strip() + "\n"
-    out_path.write_text(lrc_text, encoding="utf-8")
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    tmp_path.write_text(lrc_text, encoding="utf-8")
+    tmp_path.replace(out_path)
     return out_path
-

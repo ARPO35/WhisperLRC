@@ -18,3 +18,4 @@ class TranslationToolContext:
     audio_path: str
     sentences: list[SentenceRef]
     asr_config: ASRConfig
+    shared_model: object | None = None
