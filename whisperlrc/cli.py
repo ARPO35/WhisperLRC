@@ -20,6 +20,7 @@ class Page(Enum):
     PROCESSING = auto()
     CONFIG = auto()
     CHECK = auto()
+    REVIEW_WEB = auto()
     HELP = auto()
     INFO = auto()
     API_TEST = auto()
@@ -1027,7 +1028,7 @@ def _confirm_exit_config_edit(state: SessionState, *, exit_page: Page, stay_page
 
 
 def _render_main_page(state: SessionState) -> Page | None:
-    options = ["批处理", "配置", "检查", "帮助"]
+    options = ["批处理", "配置", "检查", "人工校对WebUI", "帮助"]
     action, idx = _run_arrow_menu(path="主菜单", title="WhisperLRC 主菜单", options=options)
     _append_operation_log(
         state,
@@ -1042,7 +1043,8 @@ def _render_main_page(state: SessionState) -> Page | None:
         0: Page.BATCH,
         1: Page.CONFIG,
         2: Page.CHECK,
-        3: Page.HELP,
+        3: Page.REVIEW_WEB,
+        4: Page.HELP,
     }
     return mapping.get(idx, Page.MAIN)
 
@@ -1635,6 +1637,109 @@ def _render_api_test_page(state: SessionState) -> Page:
             return Page.CHECK
 
 
+def _resolve_review_output_dir(state: SessionState) -> Path:
+    try:
+        cfg = load_config(state.config_path)
+        out = Path(cfg.output.default_output_dir)
+        return out if str(out).strip() else state.output_dir
+    except Exception:
+        return state.output_dir
+
+
+def _run_review_web_server(state: SessionState, *, host: str, port: int, output_dir: Path) -> tuple[bool, str]:
+    try:
+        from whisperlrc.review_server import run_review_server
+    except ModuleNotFoundError as e:
+        return (False, f"缺少依赖：{e}。请安装 fastapi uvicorn pydantic")
+    except Exception as e:
+        return (False, f"加载 WebUI 模块失败：{e}")
+
+    _clear_screen()
+    _print_path_bar("主菜单->人工校对WebUI->服务中")
+    print("人工校对 WebUI 服务已启动（独占模式）")
+    print("================================")
+    print(f"任务目录：{output_dir}")
+    print(f"访问地址：http://{host}:{port}")
+    print("按 Ctrl+C 停止服务并返回主菜单。")
+    _append_operation_log(
+        state,
+        "review_web_server_start",
+        {"host": host, "port": port, "output_dir": str(output_dir)},
+    )
+    try:
+        run_review_server(output_dir=output_dir, host=host, port=port)
+        _append_operation_log(
+            state,
+            "review_web_server_stop",
+            {"reason": "normal_exit", "host": host, "port": port},
+        )
+        return (True, "WebUI 服务已停止。")
+    except KeyboardInterrupt:
+        _append_operation_log(
+            state,
+            "review_web_server_stop",
+            {"reason": "keyboard_interrupt", "host": host, "port": port},
+        )
+        return (True, "WebUI 服务已停止。")
+    except Exception as e:
+        _append_operation_log(
+            state,
+            "review_web_server_error",
+            {"host": host, "port": port, "error": str(e)},
+        )
+        return (False, f"WebUI 服务异常：{e}")
+
+
+def _render_review_web_page(state: SessionState) -> Page:
+    host = "127.0.0.1"
+    port = 8765
+    output_dir = _resolve_review_output_dir(state)
+    options = ["启动服务（独占模式）", "返回主菜单"]
+    action, idx = _run_arrow_menu(path="主菜单->人工校对WebUI", title="人工校对 WebUI", options=options)
+    _append_operation_log(
+        state,
+        "review_web_menu_action",
+        {
+            "action": action,
+            "index": idx,
+            "option": options[idx] if 0 <= idx < len(options) else "",
+            "output_dir": str(output_dir),
+        },
+    )
+    if action in {"q", "esc"}:
+        return Page.MAIN
+    if idx == 1:
+        return Page.MAIN
+
+    confirm = _confirm_action(
+        f"将以独占模式启动 WebUI 服务。\n地址：http://{host}:{port}\n任务目录：{output_dir}\n确认启动？"
+    )
+    _append_operation_log(
+        state,
+        "review_web_confirm_start",
+        {"confirm": confirm, "host": host, "port": port, "output_dir": str(output_dir)},
+    )
+    if confirm == "q":
+        return Page.MAIN
+    if confirm != "y":
+        return _show_info(
+            state,
+            "WebUI 结果",
+            ["已取消启动 WebUI 服务。"],
+            Page.MAIN,
+            "主菜单->人工校对WebUI->结果",
+        )
+
+    ok, msg = _run_review_web_server(state, host=host, port=port, output_dir=output_dir)
+    return _show_info(
+        state,
+        "WebUI 结果",
+        [msg],
+        Page.MAIN,
+        "主菜单->人工校对WebUI->结果",
+    )
+
+
 def _render_help_page() -> Page:
     _print_path_bar("主菜单->帮助")
     print("帮助页面")
@@ -1649,6 +1754,7 @@ def _render_help_page() -> Page:
     print("- role=user 只发送 {input}，prompt.txt 不再强制包含 {input}")
     print("- 检查页面支持 API 测试")
     print("- 检查页面支持从 JSON 导出 LRC")
+    print("- 人工校对WebUI：主菜单可启动本地服务（Ctrl+C 停止）")
 
     key = _read_single_key({"q"}, allow_esc=True)
     if key in {"q", "esc"}:
@@ -1723,6 +1829,9 @@ def run_interactive_menu() -> int:
                 continue
             if page == Page.CHECK:
                 page = _render_check_page(state)
+                continue
+            if page == Page.REVIEW_WEB:
+                page = _render_review_web_page(state)
                 continue
             if page == Page.API_TEST:
                 page = _render_api_test_page(state)

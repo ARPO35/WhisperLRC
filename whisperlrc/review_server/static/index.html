@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WhisperLRC 人工校对</title>
+  <style>
+    :root {
+      --bg: #f3f5ef;
+      --panel: #ffffff;
+      --text: #17231f;
+      --muted: #53615c;
+      --accent: #0f766e;
+      --line: #dbe4de;
+      --danger: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Noto Sans SC","Microsoft YaHei UI","PingFang SC",sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 10% 10%, #e5f2ec 0%, transparent 40%),
+        radial-gradient(circle at 90% 20%, #eef6e8 0%, transparent 35%),
+        var(--bg);
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      min-height: 100vh;
+    }
+    .sidebar {
+      border-right: 1px solid var(--line);
+      background: #fbfdfb;
+      padding: 14px;
+      overflow: auto;
+    }
+    .main {
+      padding: 14px;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 12px;
+      overflow: hidden;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      gap: 8px;
+    }
+    .title { font-size: 16px; font-weight: 700; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input, select, textarea, button {
+      font: inherit;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      background: #fff;
+      color: var(--text);
+    }
+    input, select, textarea { width: 100%; }
+    textarea { min-height: 72px; resize: vertical; }
+    button {
+      cursor: pointer;
+      background: #fff;
+    }
+    button.primary {
+      border-color: var(--accent);
+      color: #fff;
+      background: var(--accent);
+    }
+    button.danger {
+      border-color: var(--danger);
+      color: var(--danger);
+      background: #fff;
+    }
+    .task-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .task {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      cursor: pointer;
+      background: #fff;
+    }
+    .task.active {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(15,118,110,0.12);
+    }
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 12px;
+      min-height: 0;
+    }
+    .sentence-list {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: auto;
+      background: #fff;
+      min-height: 0;
+      max-height: calc(100vh - 280px);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      border-bottom: 1px solid #edf2ee;
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    tr.sel { background: #eef7f5; }
+    .status {
+      font-size: 12px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      background: #fff;
+    }
+    .panel-grid { display: grid; gap: 8px; }
+    .mono { font-family: Consolas, "Courier New", monospace; }
+    @media (max-width: 1100px) {
+      .layout { grid-template-columns: 1fr; }
+      .split { grid-template-columns: 1fr; }
+      .sentence-list { max-height: 42vh; }
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="head">
+      <div class="title">人工校对任务</div>
+      <button id="refreshTasks">刷新</button>
+    </div>
+    <input id="taskFilter" placeholder="按文件名过滤..." />
+    <div id="taskList" class="task-list"></div>
+  </aside>
+
+  <main class="main">
+    <section class="card">
+      <div class="head">
+        <div>
+          <div id="taskTitle" class="title">未选择任务</div>
+          <div id="taskMeta" class="muted"></div>
+        </div>
+        <div class="row">
+          <select id="taskStatus">
+            <option value="todo">todo</option>
+            <option value="in_review">in_review</option>
+            <option value="done">done</option>
+            <option value="partial">partial</option>
+            <option value="failed">failed</option>
+          </select>
+          <button id="saveTaskStatus">更新状态</button>
+          <button id="exportZh" class="primary">导出ZH</button>
+          <button id="exportBoth">导出JA+ZH</button>
+        </div>
+      </div>
+      <div class="row">
+        <audio id="audioPlayer" controls style="width:100%"></audio>
+      </div>
+    </section>
+
+    <section class="split">
+      <div class="card sentence-list">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:90px;">时间</th>
+              <th>原文/译文</th>
+              <th style="width:90px;">状态</th>
+              <th style="width:80px;"></th>
+            </tr>
+          </thead>
+          <tbody id="sentenceBody"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="head">
+          <div class="title">句子编辑</div>
+          <span id="sentenceId" class="status">未选择</span>
+        </div>
+        <div class="panel-grid">
+          <label>原文 JA</label>
+          <textarea id="origJa" readonly></textarea>
+          <label>机器译文 ZH</label>
+          <textarea id="origZh" readonly></textarea>
+          <label>校对 JA</label>
+          <textarea id="editJa" placeholder="可留空"></textarea>
+          <label>校对 ZH</label>
+          <textarea id="editZh" placeholder="可留空"></textarea>
+          <label>校对状态</label>
+          <select id="editState">
+            <option value="pending">pending</option>
+            <option value="accepted">accepted</option>
+            <option value="needs_check">needs_check</option>
+          </select>
+          <div class="row">
+            <button id="seekBtn">跳转并播放</button>
+            <button id="saveSentence" class="primary">保存句子</button>
+          </div>
+          <div id="message" class="muted mono"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+  const state = {
+    tasks: [],
+    currentTaskId: "",
+    currentTask: null,
+    currentSentenceId: "",
+  };
+
+  const el = (id) => document.getElementById(id);
+
+  function setMsg(text, isError = false) {
+    const msg = el("message");
+    msg.textContent = text || "";
+    msg.style.color = isError ? "#b42318" : "#53615c";
+  }
+
+  async function api(url, options = {}) {
+    const res = await fetch(url, options);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = data && data.detail ? data.detail : res.statusText;
+      throw new Error(detail || "请求失败");
+    }
+    return data;
+  }
+
+  function fmtSec(sec) {
+    const n = Number(sec || 0);
+    const m = Math.floor(n / 60).toString().padStart(2, "0");
+    const s = (n % 60).toFixed(2).padStart(5, "0");
+    return `${m}:${s}`;
+  }
+
+  function renderTasks() {
+    const keyword = (el("taskFilter").value || "").trim().toLowerCase();
+    const list = el("taskList");
+    list.innerHTML = "";
+    for (const t of state.tasks) {
+      const hit = !keyword || String(t.task_id || "").toLowerCase().includes(keyword) || String(t.file_id || "").toLowerCase().includes(keyword);
+      if (!hit) continue;
+
+      const node = document.createElement("div");
+      node.className = "task" + (state.currentTaskId === t.task_id ? " active" : "");
+      node.innerHTML = `
+        <div class="row" style="justify-content:space-between">
+          <strong>${t.file_id || t.task_id}</strong>
+          <span class="status">${t.status || "todo"}</span>
+        </div>
+        <div class="muted">句子 ${t.reviewed_sentences || 0}/${t.total_sentences || 0} · 风险 ${t.risk_count || 0}</div>
+        <div class="muted">${t.task_id}</div>
+      `;
+      node.onclick = () => openTask(t.task_id);
+      list.appendChild(node);
+    }
+  }
+
+  function renderTaskDetail() {
+    const t = state.currentTask;
+    el("sentenceBody").innerHTML = "";
+    if (!t) {
+      el("taskTitle").textContent = "未选择任务";
+      el("taskMeta").textContent = "";
+      el("audioPlayer").removeAttribute("src");
+      el("audioPlayer").load();
+      return;
+    }
+
+    el("taskTitle").textContent = `${t.file_id} (${t.task_id})`;
+    el("taskMeta").textContent = `状态: ${t.status} | 句子: ${t.sentences.length}`;
+    el("taskStatus").value = t.status || "todo";
+    el("audioPlayer").src = `/api/tasks/${encodeURIComponent(t.task_id)}/audio?ts=${Date.now()}`;
+
+    for (const s of t.sentences) {
+      const tr = document.createElement("tr");
+      if (s.sentence_id === state.currentSentenceId) tr.className = "sel";
+      const preview = (s.review_text_zh || s.zh_text || "").slice(0, 66);
+      tr.innerHTML = `
+        <td>${fmtSec(s.start_sec)} - ${fmtSec(s.end_sec)}</td>
+        <td>
+          <div>${s.ja_text || ""}</div>
+          <div class="muted">${preview}</div>
+        </td>
+        <td><span class="status">${s.review_state || "pending"}</span></td>
+        <td><button data-sid="${s.sentence_id}">编辑</button></td>
+      `;
+      tr.querySelector("button").onclick = () => selectSentence(s.sentence_id);
+      el("sentenceBody").appendChild(tr);
+    }
+  }
+
+  function selectSentence(sentenceId) {
+    state.currentSentenceId = sentenceId;
+    const t = state.currentTask;
+    if (!t) return;
+    const s = t.sentences.find(x => x.sentence_id === sentenceId);
+    if (!s) return;
+    el("sentenceId").textContent = sentenceId;
+    el("origJa").value = s.ja_text || "";
+    el("origZh").value = s.zh_text || "";
+    el("editJa").value = s.review_text_ja || "";
+    el("editZh").value = s.review_text_zh || "";
+    el("editState").value = s.review_state || "pending";
+    renderTaskDetail();
+  }
+
+  async function loadTasks() {
+    setMsg("加载任务中...");
+    const data = await api("/api/tasks");
+    state.tasks = data.tasks || [];
+    renderTasks();
+    setMsg(`任务数: ${state.tasks.length}`);
+  }
+
+  async function openTask(taskId) {
+    state.currentTaskId = taskId;
+    state.currentSentenceId = "";
+    setMsg("加载任务详情中...");
+    state.currentTask = await api(`/api/tasks/${encodeURIComponent(taskId)}`);
+    renderTasks();
+    renderTaskDetail();
+    if (state.currentTask.sentences && state.currentTask.sentences.length > 0) {
+      selectSentence(state.currentTask.sentences[0].sentence_id);
+    }
+    setMsg(`已打开 ${taskId}`);
+  }
+
+  async function saveSentence() {
+    if (!state.currentTaskId || !state.currentSentenceId) return;
+    setMsg("保存句子中...");
+    await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(state.currentSentenceId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        review_text_ja: el("editJa").value,
+        review_text_zh: el("editZh").value,
+        review_state: el("editState").value,
+      }),
+    });
+    await openTask(state.currentTaskId);
+    selectSentence(state.currentSentenceId);
+    setMsg("保存成功");
+  }
+
+  async function saveTaskStatus() {
+    if (!state.currentTaskId) return;
+    setMsg("更新任务状态中...");
+    await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: el("taskStatus").value }),
+    });
+    await openTask(state.currentTaskId);
+    setMsg("状态已更新");
+  }
+
+  async function exportTask(mode) {
+    if (!state.currentTaskId) return;
+    setMsg("导出中...");
+    const payload = mode === "zh"
+      ? { export_ja: false, export_zh: true }
+      : { export_ja: true, export_zh: true };
+    const data = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/export`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const files = (data.exported_files || []).join(" | ");
+    const warnings = (data.warnings || []).length;
+    setMsg(`导出完成: ${files}${warnings ? ` | 警告 ${warnings}` : ""}`);
+  }
+
+  function seekAndPlay() {
+    if (!state.currentTask || !state.currentSentenceId) return;
+    const s = state.currentTask.sentences.find(x => x.sentence_id === state.currentSentenceId);
+    if (!s) return;
+    const audio = el("audioPlayer");
+    audio.currentTime = Number(s.start_sec || 0);
+    audio.play().catch(() => {});
+  }
+
+  el("refreshTasks").onclick = () => loadTasks().catch(e => setMsg(String(e), true));
+  el("taskFilter").oninput = () => renderTasks();
+  el("saveSentence").onclick = () => saveSentence().catch(e => setMsg(String(e), true));
+  el("saveTaskStatus").onclick = () => saveTaskStatus().catch(e => setMsg(String(e), true));
+  el("exportZh").onclick = () => exportTask("zh").catch(e => setMsg(String(e), true));
+  el("exportBoth").onclick = () => exportTask("both").catch(e => setMsg(String(e), true));
+  el("seekBtn").onclick = () => seekAndPlay();
+
+  loadTasks().catch(e => setMsg(String(e), true));
+</script>
+</body>
+</html>
+
