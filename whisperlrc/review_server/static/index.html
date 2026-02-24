@@ -167,19 +167,23 @@
     }
     .subtitle-ja {
       font-size: 16px;
-      line-height: 1.45;
+      line-height: 1.6;
       font-weight: 600;
       word-break: break-word;
     }
     .subtitle-zh {
-      margin-top: 4px;
-      font-size: 15px;
-      line-height: 1.45;
+      margin-top: 6px;
+      font-size: 16px;
+      line-height: 1.6;
       color: var(--muted);
       word-break: break-word;
     }
+    .subtitle-cell {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
     .conf-row {
-      margin-top: 4px;
       display: flex;
       flex-wrap: wrap;
       gap: 3px;
@@ -194,11 +198,6 @@
       line-height: 1.2;
       color: #d6e4f2;
       font-size: 13px;
-    }
-    .conf-empty {
-      margin-top: 4px;
-      font-size: 12px;
-      color: #6f8192;
     }
     tbody tr {
       cursor: pointer;
@@ -477,7 +476,7 @@
     return `hsl(${h} 78% 48%)`;
   }
 
-  function buildConfidenceTokenHtml(sentence) {
+  function buildJaWithConfidenceHtml(sentence, fallbackJa) {
     const words = Array.isArray(sentence.word_items) ? sentence.word_items : [];
     const items = [];
     for (const w of words) {
@@ -491,9 +490,9 @@
       items.push(`<span class="conf-token" style="--conf-color:${color}" title="${title}">${escapeHtml(text)}</span>`);
     }
     if (!items.length) {
-      return `<div class="conf-empty">词级置信度数据不可用</div>`;
+      return `<div class="subtitle-ja">${escapeHtml(fallbackJa)}</div>`;
     }
-    return `<div class="conf-row">${items.join("")}</div>`;
+    return `<div class="subtitle-ja conf-row">${items.join("")}</div>`;
   }
 
   function almostEqual(a, b) {
@@ -724,13 +723,12 @@
       tr.className = cls.join(" ");
       const previewJa = getSentenceDisplayJa(s);
       const previewZh = getSentenceDisplayZh(s);
-      const confHtml = buildConfidenceTokenHtml(s);
+      const jaHtml = buildJaWithConfidenceHtml(s, previewJa);
       const zhHtml = previewZh ? `<div class="subtitle-zh">${escapeHtml(previewZh)}</div>` : "";
       tr.innerHTML = `
         <td>${fmtSec(s.start_sec)} - ${fmtSec(s.end_sec)}</td>
-        <td>
-          <div class="subtitle-ja">${escapeHtml(previewJa)}</div>
-          ${confHtml}
+        <td class="subtitle-cell">
+          ${jaHtml}
           ${zhHtml}
         </td>
         <td><span class="status-pill">${s.review_state || "pending"}</span></td>
