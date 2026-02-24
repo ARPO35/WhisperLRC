@@ -3,8 +3,12 @@ from __future__ import annotations
 import os
 import json
 import queue
+import signal
+import sys
 import threading
 import time
+import traceback
+import faulthandler
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -88,6 +92,8 @@ class SessionState:
     batch_last_file_stats_lines: list[str] = field(default_factory=list)
     op_log_path: Path | None = None
     op_log_fp: TextIO | None = None
+    crash_log_path: Path | None = None
+    crash_log_fp: TextIO | None = None
 
 
 @dataclass
@@ -355,6 +361,118 @@ def _append_operation_log(state: SessionState, event: str, payload: dict[str, An
         pass
 
 
+_CRASH_HOOKS_INSTALLED = False
+_CRASH_LOG_FP: TextIO | None = None
+_ORIG_SYS_EXCEPTHOOK = sys.excepthook
+_ORIG_THREAD_EXCEPTHOOK = getattr(threading, "excepthook", None)
+
+
+def _build_crash_log_path(output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    candidate = output_dir / f"crash_{ts}.log"
+    if not candidate.exists():
+        return candidate
+    i = 1
+    while True:
+        candidate = output_dir / f"crash_{ts}_{i}.log"
+        if not candidate.exists():
+            return candidate
+        i += 1
+
+
+def _append_crash_log_line(text: str) -> None:
+    fp = _CRASH_LOG_FP
+    if fp is None:
+        return
+    try:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        fp.write(f"{ts} | {text}\n")
+        fp.flush()
+    except Exception:
+        pass
+
+
+def _install_crash_logging(state: SessionState) -> None:
+    global _CRASH_HOOKS_INSTALLED, _CRASH_LOG_FP
+    if _CRASH_HOOKS_INSTALLED:
+        return
+    try:
+        output_dir = state.output_dir if str(state.output_dir).strip() else Path("output")
+        crash_path = _build_crash_log_path(output_dir)
+        crash_fp = crash_path.open("a", encoding="utf-8")
+    except Exception:
+        return
+
+    state.crash_log_path = crash_path
+    state.crash_log_fp = crash_fp
+    _CRASH_LOG_FP = crash_fp
+    _append_crash_log_line("crash logger initialized")
+
+    def _sys_excepthook(exc_type: type[BaseException], exc_value: BaseException, exc_tb: Any) -> None:
+        _append_crash_log_line("UNCAUGHT EXCEPTION")
+        _append_crash_log_line("".join(traceback.format_exception(exc_type, exc_value, exc_tb)).rstrip())
+        try:
+            _ORIG_SYS_EXCEPTHOOK(exc_type, exc_value, exc_tb)
+        except Exception:
+            pass
+
+    def _thread_excepthook(args: Any) -> None:
+        _append_crash_log_line(f"UNCAUGHT THREAD EXCEPTION in {getattr(args, 'thread', None)}")
+        _append_crash_log_line(
+            "".join(
+                traceback.format_exception(
+                    getattr(args, "exc_type", Exception),
+                    getattr(args, "exc_value", Exception("unknown thread exception")),
+                    getattr(args, "exc_traceback", None),
+                )
+            ).rstrip()
+        )
+        try:
+            if _ORIG_THREAD_EXCEPTHOOK is not None:
+                _ORIG_THREAD_EXCEPTHOOK(args)
+        except Exception:
+            pass
+
+    try:
+        sys.excepthook = _sys_excepthook
+    except Exception:
+        pass
+    try:
+        if hasattr(threading, "excepthook"):
+            threading.excepthook = _thread_excepthook  # type: ignore[assignment]
+    except Exception:
+        pass
+
+    try:
+        faulthandler.enable(file=crash_fp, all_threads=True)
+    except Exception:
+        pass
+    try:
+        sig = getattr(signal, "SIGTERM", None)
+        if sig is not None:
+            faulthandler.register(sig, file=crash_fp, all_threads=True, chain=True)
+    except Exception:
+        pass
+
+    _CRASH_HOOKS_INSTALLED = True
+
+
+def _close_crash_log_file(state: SessionState) -> None:
+    global _CRASH_LOG_FP
+    fp = state.crash_log_fp
+    if fp is None:
+        return
+    try:
+        _append_crash_log_line("crash logger closed")
+        fp.flush()
+        fp.close()
+    except Exception:
+        pass
+    state.crash_log_fp = None
+    _CRASH_LOG_FP = None
+
+
 def _state_snapshot(state: SessionState) -> dict[str, Any]:
     return {
         "config_path": str(state.config_path),
@@ -518,8 +636,14 @@ def _start_batch_task(
                 cancel_token=cancel_token,
             )
             task_q.put({"type": "worker_done", "rc": rc})
-        except Exception as e:
-            task_q.put({"type": "worker_error", "error": str(e)})
+        except BaseException as e:
+            task_q.put(
+                {
+                    "type": "worker_error",
+                    "error": str(e),
+                    "traceback": traceback.format_exc(),
+                }
+            )
 
     t = threading.Thread(target=worker, daemon=True)
     state.batch_worker = t
@@ -740,6 +864,7 @@ def _consume_batch_events(state: SessionState) -> None:
             state.batch_finished = True
             state.batch_result_rc = 2
             state.batch_error = str(event.get("error", "未知错误"))
+            tb_text = str(event.get("traceback", "")).strip()
             state.batch_summary_lines = [
                 "状态：失败",
                 f"错误：{state.batch_error}",
@@ -747,12 +872,19 @@ def _consume_batch_events(state: SessionState) -> None:
                 f"最后处理文件：{state.batch_current_file or '（无）'}",
             ]
             _append_batch_log(state, f"[异常] {state.batch_error}")
+            if tb_text:
+                _append_batch_log(state, "[异常栈]")
+                for line in tb_text.splitlines():
+                    _append_batch_log(state, line)
+                _append_crash_log_line("BATCH WORKER ERROR")
+                _append_crash_log_line(tb_text)
             _close_current_log_file(state)
             _append_operation_log(
                 state,
                 "batch_worker_error",
                 {
                     "error": state.batch_error,
+                    "traceback": tb_text,
                     "state_after": _state_snapshot(state),
                 },
             )
@@ -1787,15 +1919,19 @@ def run_interactive_menu() -> int:
     except Exception:
         state.input_dir = Path("input_audio")
         state.output_dir = Path("output")
+    _install_crash_logging(state)
     _open_operation_log_file(state)
     if state.op_log_path is not None:
         print(f"会话日志：{state.op_log_path}")
+    if state.crash_log_path is not None:
+        print(f"崩溃日志：{state.crash_log_path}")
     _append_operation_log(
         state,
         "app_start",
         {
             "state": _state_snapshot(state),
             "op_log_path": str(state.op_log_path) if state.op_log_path else "",
+            "crash_log_path": str(state.crash_log_path) if state.crash_log_path else "",
         },
     )
     page: Page | None = Page.MAIN
@@ -1862,6 +1998,7 @@ def run_interactive_menu() -> int:
         )
         _close_current_log_file(state)
         _close_operation_log_file(state)
+        _close_crash_log_file(state)
 
     return 0
 
