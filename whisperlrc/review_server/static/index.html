@@ -6,32 +6,39 @@
   <title>WhisperLRC 人工校对</title>
   <style>
     :root {
-      --bg: #f3f5ef;
-      --panel: #ffffff;
-      --text: #17231f;
-      --muted: #53615c;
-      --accent: #0f766e;
-      --line: #dbe4de;
-      --danger: #b42318;
+      --bg: #0b1014;
+      --bg-soft: #0f151b;
+      --panel: #141c24;
+      --panel-2: #17212b;
+      --line: #243341;
+      --line-2: #2d3d4c;
+      --text: #dde6ef;
+      --muted: #8ea0b1;
+      --accent: #14b8a6;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --ok: #22c55e;
+      --selected: #1f2f3d;
     }
     * { box-sizing: border-box; }
-    body {
+    html, body {
       margin: 0;
-      font-family: "Noto Sans SC","Microsoft YaHei UI","PingFang SC",sans-serif;
+      height: 100%;
+      background: radial-gradient(circle at 16% 6%, #17232f 0%, transparent 32%),
+                  radial-gradient(circle at 92% 18%, #122028 0%, transparent 35%),
+                  var(--bg);
       color: var(--text);
-      background:
-        radial-gradient(circle at 10% 10%, #e5f2ec 0%, transparent 40%),
-        radial-gradient(circle at 90% 20%, #eef6e8 0%, transparent 35%),
-        var(--bg);
+      font-family: "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
     }
     .layout {
+      min-height: 100%;
       display: grid;
-      grid-template-columns: 320px 1fr;
-      min-height: 100vh;
+      grid-template-columns: 340px 1fr;
     }
     .sidebar {
       border-right: 1px solid var(--line);
-      background: #fbfdfb;
+      background: rgba(12, 17, 22, 0.75);
+      backdrop-filter: blur(4px);
       padding: 14px;
       overflow: auto;
     }
@@ -40,47 +47,75 @@
       display: grid;
       grid-template-rows: auto auto 1fr;
       gap: 12px;
+      min-height: 0;
       overflow: hidden;
     }
     .card {
-      background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 10px;
+      border-radius: 12px;
+      background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
       padding: 12px;
+      min-height: 0;
     }
     .head {
       display: flex;
-      justify-content: space-between;
       align-items: center;
+      justify-content: space-between;
+      gap: 10px;
       margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+    .title {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+    .muted {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .row {
+      display: flex;
+      align-items: center;
       gap: 8px;
+      flex-wrap: wrap;
     }
-    .title { font-size: 16px; font-weight: 700; }
-    .muted { color: var(--muted); font-size: 12px; }
-    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     input, select, textarea, button {
-      font: inherit;
-      border-radius: 8px;
-      border: 1px solid var(--line);
-      padding: 8px 10px;
-      background: #fff;
+      border: 1px solid var(--line-2);
+      background: #0f171f;
       color: var(--text);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font: inherit;
     }
-    input, select, textarea { width: 100%; }
-    textarea { min-height: 72px; resize: vertical; }
+    input, select, textarea {
+      width: 100%;
+    }
+    textarea {
+      min-height: 70px;
+      resize: vertical;
+    }
     button {
       cursor: pointer;
-      background: #fff;
+      transition: all 0.14s ease;
+    }
+    button:hover {
+      border-color: #3a5268;
+      transform: translateY(-1px);
     }
     button.primary {
-      border-color: var(--accent);
-      color: #fff;
-      background: var(--accent);
+      border-color: #0d9488;
+      background: #0f766e;
+      color: #eafffb;
     }
-    button.danger {
-      border-color: var(--danger);
-      color: var(--danger);
-      background: #fff;
+    .status-pill {
+      border: 1px solid var(--line-2);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      color: var(--muted);
+      background: #101922;
+      white-space: nowrap;
     }
     .task-list {
       display: grid;
@@ -88,29 +123,32 @@
       margin-top: 10px;
     }
     .task {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px;
+      border: 1px solid var(--line-2);
+      border-radius: 9px;
+      background: #101821;
+      padding: 9px;
       cursor: pointer;
-      background: #fff;
+    }
+    .task:hover {
+      border-color: #3d566c;
     }
     .task.active {
       border-color: var(--accent);
-      box-shadow: 0 0 0 2px rgba(15,118,110,0.12);
+      box-shadow: 0 0 0 1px rgba(20,184,166,0.35) inset;
+      background: #10212a;
     }
     .split {
       display: grid;
-      grid-template-columns: 1fr 380px;
+      grid-template-columns: 1fr 420px;
       gap: 12px;
       min-height: 0;
     }
-    .sentence-list {
-      border: 1px solid var(--line);
-      border-radius: 8px;
+    .sentence-wrap {
       overflow: auto;
-      background: #fff;
-      min-height: 0;
-      max-height: calc(100vh - 280px);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #0f171f;
+      max-height: calc(100vh - 320px);
     }
     table {
       width: 100%;
@@ -118,26 +156,58 @@
       font-size: 13px;
     }
     th, td {
-      border-bottom: 1px solid #edf2ee;
-      padding: 8px;
-      text-align: left;
+      padding: 9px;
+      border-bottom: 1px solid #1d2a36;
       vertical-align: top;
     }
-    tr.sel { background: #eef7f5; }
-    .status {
-      font-size: 12px;
-      padding: 2px 6px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      color: var(--muted);
-      background: #fff;
+    tbody tr {
+      cursor: pointer;
+      transition: background 0.12s ease;
     }
-    .panel-grid { display: grid; gap: 8px; }
+    tbody tr:hover {
+      background: #13202b;
+    }
+    tbody tr.sel {
+      background: var(--selected);
+    }
+    .timeline-note {
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    #timelineCanvas {
+      width: 100%;
+      height: 148px;
+      border: 1px solid var(--line-2);
+      border-radius: 10px;
+      background: #0c131a;
+      display: block;
+      cursor: crosshair;
+    }
+    .panel-grid {
+      display: grid;
+      gap: 8px;
+    }
+    .time-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
     .mono { font-family: Consolas, "Courier New", monospace; }
-    @media (max-width: 1100px) {
-      .layout { grid-template-columns: 1fr; }
-      .split { grid-template-columns: 1fr; }
-      .sentence-list { max-height: 42vh; }
+    .small {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    @media (max-width: 1200px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+      .split {
+        grid-template-columns: 1fr;
+      }
+      .sentence-wrap {
+        max-height: 42vh;
+      }
     }
   </style>
 </head>
@@ -172,20 +242,21 @@
           <button id="exportBoth">导出JA+ZH</button>
         </div>
       </div>
-      <div class="row">
-        <audio id="audioPlayer" controls style="width:100%"></audio>
+      <audio id="audioPlayer" controls style="width:100%"></audio>
+      <canvas id="timelineCanvas"></canvas>
+      <div class="timeline-note">
+        时间轴说明：白色为播放位置，青色为字幕起止锚点；共享锚点表示前后句相接。支持拖动锚点、Ctrl+滚轮缩放。
       </div>
     </section>
 
     <section class="split">
-      <div class="card sentence-list">
+      <div class="card sentence-wrap">
         <table>
           <thead>
             <tr>
-              <th style="width:90px;">时间</th>
-              <th>原文/译文</th>
-              <th style="width:90px;">状态</th>
-              <th style="width:80px;"></th>
+              <th style="width:130px;">时间</th>
+              <th>原文 / 译文</th>
+              <th style="width:90px;">校对</th>
             </tr>
           </thead>
           <tbody id="sentenceBody"></tbody>
@@ -195,13 +266,24 @@
       <div class="card">
         <div class="head">
           <div class="title">句子编辑</div>
-          <span id="sentenceId" class="status">未选择</span>
+          <span id="sentenceId" class="status-pill">未选择</span>
         </div>
         <div class="panel-grid">
           <label>原文 JA</label>
           <textarea id="origJa" readonly></textarea>
           <label>机器译文 ZH</label>
           <textarea id="origZh" readonly></textarea>
+          <div class="time-grid">
+            <div>
+              <label>起始秒 start_sec</label>
+              <input id="editStart" type="number" step="0.001" min="0" />
+            </div>
+            <div>
+              <label>结束秒 end_sec</label>
+              <input id="editEnd" type="number" step="0.001" min="0" />
+            </div>
+          </div>
+          <div class="small">可在此精确输入时间；时间轴拖动灵敏度较低用于微调。</div>
           <label>校对 JA</label>
           <textarea id="editJa" placeholder="可留空"></textarea>
           <label>校对 ZH</label>
@@ -213,10 +295,9 @@
             <option value="needs_check">needs_check</option>
           </select>
           <div class="row">
-            <button id="seekBtn">跳转并播放</button>
             <button id="saveSentence" class="primary">保存句子</button>
           </div>
-          <div id="message" class="muted mono"></div>
+          <div id="message" class="small mono"></div>
         </div>
       </div>
     </section>
@@ -224,19 +305,33 @@
 </div>
 
 <script>
+  const EPS = 0.001;
+  const DRAG_SENSITIVITY = 0.22;
+  const MIN_VIEW_SPAN_SEC = 1.0;
+
   const state = {
     tasks: [],
     currentTaskId: "",
     currentTask: null,
     currentSentenceId: "",
+    audioCtx: null,
+    audioBuffer: null,
+    audioDurationSec: 0,
+    viewStartSec: 0,
+    viewEndSec: 0,
+    drag: null,
+    drawRaf: 0,
+    lastCanvasW: 0,
+    lastCanvasH: 0,
+    audioDecodeToken: 0,
   };
 
   const el = (id) => document.getElementById(id);
 
   function setMsg(text, isError = false) {
-    const msg = el("message");
-    msg.textContent = text || "";
-    msg.style.color = isError ? "#b42318" : "#53615c";
+    const node = el("message");
+    node.textContent = text || "";
+    node.style.color = isError ? "#ef4444" : "#8ea0b1";
   }
 
   async function api(url, options = {}) {
@@ -256,76 +351,363 @@
     return `${m}:${s}`;
   }
 
+  function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
+  }
+
+  function almostEqual(a, b) {
+    return Math.abs(Number(a) - Number(b)) <= EPS;
+  }
+
+  function getSentences() {
+    if (!state.currentTask || !Array.isArray(state.currentTask.sentences)) return [];
+    return state.currentTask.sentences;
+  }
+
   function renderTasks() {
-    const keyword = (el("taskFilter").value || "").trim().toLowerCase();
     const list = el("taskList");
+    const keyword = (el("taskFilter").value || "").trim().toLowerCase();
     list.innerHTML = "";
+
     for (const t of state.tasks) {
-      const hit = !keyword || String(t.task_id || "").toLowerCase().includes(keyword) || String(t.file_id || "").toLowerCase().includes(keyword);
+      const name = String(t.file_id || t.task_id || "");
+      const id = String(t.task_id || "");
+      const hit = !keyword || name.toLowerCase().includes(keyword) || id.toLowerCase().includes(keyword);
       if (!hit) continue;
 
       const node = document.createElement("div");
       node.className = "task" + (state.currentTaskId === t.task_id ? " active" : "");
       node.innerHTML = `
         <div class="row" style="justify-content:space-between">
-          <strong>${t.file_id || t.task_id}</strong>
-          <span class="status">${t.status || "todo"}</span>
+          <strong>${name}</strong>
+          <span class="status-pill">${t.status || "todo"}</span>
         </div>
         <div class="muted">句子 ${t.reviewed_sentences || 0}/${t.total_sentences || 0} · 风险 ${t.risk_count || 0}</div>
-        <div class="muted">${t.task_id}</div>
+        <div class="muted">${id}</div>
       `;
-      node.onclick = () => openTask(t.task_id);
+      node.onclick = () => openTask(t.task_id).catch(e => setMsg(String(e), true));
       list.appendChild(node);
     }
   }
 
-  function renderTaskDetail() {
-    const t = state.currentTask;
-    el("sentenceBody").innerHTML = "";
-    if (!t) {
-      el("taskTitle").textContent = "未选择任务";
-      el("taskMeta").textContent = "";
-      el("audioPlayer").removeAttribute("src");
-      el("audioPlayer").load();
+  function applyAudioSource(taskId) {
+    const audio = el("audioPlayer");
+    audio.src = `/api/tasks/${encodeURIComponent(taskId)}/audio?ts=${Date.now()}`;
+  }
+
+  async function ensureAudioContext() {
+    if (state.audioCtx) return state.audioCtx;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) throw new Error("浏览器不支持 WebAudio");
+    state.audioCtx = new Ctx();
+    return state.audioCtx;
+  }
+
+  async function decodeAudioForTask(taskId) {
+    const token = ++state.audioDecodeToken;
+    const url = `/api/tasks/${encodeURIComponent(taskId)}/audio?raw=1&ts=${Date.now()}`;
+    try {
+      const ctx = await ensureAudioContext();
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`加载音频失败: ${resp.status}`);
+      const buffer = await resp.arrayBuffer();
+      const decoded = await ctx.decodeAudioData(buffer.slice(0));
+      if (token !== state.audioDecodeToken) return;
+      state.audioBuffer = decoded;
+      state.audioDurationSec = Number(decoded.duration || 0);
+      if (state.audioDurationSec > 0) {
+        state.viewStartSec = 0;
+        state.viewEndSec = state.audioDurationSec;
+      }
+      setMsg(`音频已加载，时长 ${fmtSec(state.audioDurationSec)}`);
+    } catch (e) {
+      if (token !== state.audioDecodeToken) return;
+      state.audioBuffer = null;
+      state.audioDurationSec = 0;
+      setMsg(`音频波形不可用：${e}`, true);
+    }
+    requestDraw();
+  }
+
+  function getSelectedSentence() {
+    const arr = getSentences();
+    return arr.find(s => s.sentence_id === state.currentSentenceId) || null;
+  }
+
+  function updateEditorBySelected() {
+    const s = getSelectedSentence();
+    if (!s) {
+      el("sentenceId").textContent = "未选择";
+      el("origJa").value = "";
+      el("origZh").value = "";
+      el("editJa").value = "";
+      el("editZh").value = "";
+      el("editStart").value = "";
+      el("editEnd").value = "";
+      el("editState").value = "pending";
       return;
     }
+    el("sentenceId").textContent = s.sentence_id;
+    el("origJa").value = s.ja_text || "";
+    el("origZh").value = s.zh_text || "";
+    el("editJa").value = s.review_text_ja || "";
+    el("editZh").value = s.review_text_zh || "";
+    el("editStart").value = Number(s.start_sec || 0).toFixed(3);
+    el("editEnd").value = Number(s.end_sec || 0).toFixed(3);
+    el("editState").value = s.review_state || "pending";
+  }
 
-    el("taskTitle").textContent = `${t.file_id} (${t.task_id})`;
-    el("taskMeta").textContent = `状态: ${t.status} | 句子: ${t.sentences.length}`;
-    el("taskStatus").value = t.status || "todo";
-    el("audioPlayer").src = `/api/tasks/${encodeURIComponent(t.task_id)}/audio?ts=${Date.now()}`;
-
-    for (const s of t.sentences) {
+  function renderSentenceTable() {
+    const tbody = el("sentenceBody");
+    tbody.innerHTML = "";
+    const arr = getSentences();
+    for (const s of arr) {
       const tr = document.createElement("tr");
       if (s.sentence_id === state.currentSentenceId) tr.className = "sel";
-      const preview = (s.review_text_zh || s.zh_text || "").slice(0, 66);
+      const preview = String((s.review_text_zh || s.zh_text || "")).slice(0, 80);
       tr.innerHTML = `
         <td>${fmtSec(s.start_sec)} - ${fmtSec(s.end_sec)}</td>
         <td>
           <div>${s.ja_text || ""}</div>
           <div class="muted">${preview}</div>
         </td>
-        <td><span class="status">${s.review_state || "pending"}</span></td>
-        <td><button data-sid="${s.sentence_id}">编辑</button></td>
+        <td><span class="status-pill">${s.review_state || "pending"}</span></td>
       `;
-      tr.querySelector("button").onclick = () => selectSentence(s.sentence_id);
-      el("sentenceBody").appendChild(tr);
+      tr.onclick = () => selectSentence(s.sentence_id, {jumpAudio: true});
+      tbody.appendChild(tr);
     }
   }
 
-  function selectSentence(sentenceId) {
-    state.currentSentenceId = sentenceId;
+  function renderTaskHeader() {
+    if (!state.currentTask) {
+      el("taskTitle").textContent = "未选择任务";
+      el("taskMeta").textContent = "";
+      return;
+    }
     const t = state.currentTask;
-    if (!t) return;
-    const s = t.sentences.find(x => x.sentence_id === sentenceId);
-    if (!s) return;
-    el("sentenceId").textContent = sentenceId;
-    el("origJa").value = s.ja_text || "";
-    el("origZh").value = s.zh_text || "";
-    el("editJa").value = s.review_text_ja || "";
-    el("editZh").value = s.review_text_zh || "";
-    el("editState").value = s.review_state || "pending";
-    renderTaskDetail();
+    el("taskTitle").textContent = `${t.file_id} (${t.task_id})`;
+    el("taskMeta").textContent = `状态: ${t.status} | 句子: ${t.sentences.length}`;
+    el("taskStatus").value = t.status || "todo";
+  }
+
+  function ensureViewWindow() {
+    const dur = Number(state.audioDurationSec || 0);
+    if (dur <= 0) {
+      state.viewStartSec = 0;
+      state.viewEndSec = 1;
+      return;
+    }
+    let span = state.viewEndSec - state.viewStartSec;
+    if (!(span > 0)) {
+      state.viewStartSec = 0;
+      state.viewEndSec = dur;
+      span = dur;
+    }
+    span = clamp(span, MIN_VIEW_SPAN_SEC, dur);
+    state.viewStartSec = clamp(state.viewStartSec, 0, Math.max(0, dur - span));
+    state.viewEndSec = state.viewStartSec + span;
+  }
+
+  function buildAnchors(sentences) {
+    const anchors = [];
+    if (!sentences.length) return anchors;
+    const n = sentences.length;
+    for (let b = 0; b <= n; b += 1) {
+      if (b === 0) {
+        anchors.push({
+          key: "b-0",
+          sec: Number(sentences[0].start_sec || 0),
+          refs: [{idx: 0, kind: "start"}],
+        });
+      } else if (b === n) {
+        anchors.push({
+          key: `b-${n}`,
+          sec: Number(sentences[n - 1].end_sec || 0),
+          refs: [{idx: n - 1, kind: "end"}],
+        });
+      } else {
+        const leftSec = Number(sentences[b - 1].end_sec || 0);
+        const rightSec = Number(sentences[b].start_sec || 0);
+        if (almostEqual(leftSec, rightSec)) {
+          anchors.push({
+            key: `j-${b}`,
+            sec: (leftSec + rightSec) / 2,
+            refs: [{idx: b - 1, kind: "end"}, {idx: b, kind: "start"}],
+          });
+        } else {
+          anchors.push({
+            key: `e-${b - 1}`,
+            sec: leftSec,
+            refs: [{idx: b - 1, kind: "end"}],
+          });
+          anchors.push({
+            key: `s-${b}`,
+            sec: rightSec,
+            refs: [{idx: b, kind: "start"}],
+          });
+        }
+      }
+    }
+    anchors.sort((a, b) => a.sec - b.sec);
+    return anchors;
+  }
+
+  function getCanvas() {
+    return el("timelineCanvas");
+  }
+
+  function getCanvasMetrics() {
+    const canvas = getCanvas();
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.floor(rect.width * dpr));
+    const h = Math.max(1, Math.floor(rect.height * dpr));
+    if (canvas.width !== w || canvas.height !== h || w !== state.lastCanvasW || h !== state.lastCanvasH) {
+      canvas.width = w;
+      canvas.height = h;
+      state.lastCanvasW = w;
+      state.lastCanvasH = h;
+    }
+    return {canvas, rect, dpr, w, h};
+  }
+
+  function secToX(sec, rect) {
+    const span = Math.max(0.0001, state.viewEndSec - state.viewStartSec);
+    return ((sec - state.viewStartSec) / span) * rect.width;
+  }
+
+  function xToSec(x, rect) {
+    const span = Math.max(0.0001, state.viewEndSec - state.viewStartSec);
+    return state.viewStartSec + (x / rect.width) * span;
+  }
+
+  function drawWaveform(ctx, rect, dpr) {
+    const buffer = state.audioBuffer;
+    if (!buffer) {
+      ctx.fillStyle = "#6b7c8d";
+      ctx.font = `${12 * dpr}px sans-serif`;
+      ctx.fillText("波形不可用", 12 * dpr, 20 * dpr);
+      return;
+    }
+    const channels = buffer.numberOfChannels;
+    const dataA = buffer.getChannelData(0);
+    const dataB = channels > 1 ? buffer.getChannelData(1) : null;
+    const sampleRate = buffer.sampleRate;
+    const top = 10 * dpr;
+    const h = rect.height * dpr - top * 2;
+    const mid = top + h / 2;
+    const pxCount = Math.max(1, Math.floor(rect.width));
+    const startSample = Math.floor(state.viewStartSec * sampleRate);
+    const endSample = Math.min(dataA.length, Math.ceil(state.viewEndSec * sampleRate));
+    const range = Math.max(1, endSample - startSample);
+    const samplesPerPx = Math.max(1, Math.floor(range / pxCount));
+
+    ctx.strokeStyle = "#2b3b49";
+    ctx.lineWidth = 1 * dpr;
+    ctx.beginPath();
+    ctx.moveTo(0, mid);
+    ctx.lineTo(rect.width * dpr, mid);
+    ctx.stroke();
+
+    ctx.strokeStyle = "#5a7084";
+    ctx.lineWidth = 1 * dpr;
+    for (let x = 0; x < pxCount; x += 1) {
+      const from = startSample + x * samplesPerPx;
+      const to = Math.min(endSample, from + samplesPerPx);
+      let peak = 0;
+      for (let i = from; i < to; i += 1) {
+        let v = Math.abs(dataA[i] || 0);
+        if (dataB) v = (v + Math.abs(dataB[i] || 0)) * 0.5;
+        if (v > peak) peak = v;
+      }
+      const hh = peak * h * 0.9;
+      const xx = x * dpr;
+      ctx.beginPath();
+      ctx.moveTo(xx, mid - hh * 0.5);
+      ctx.lineTo(xx, mid + hh * 0.5);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = "#8297aa";
+    ctx.font = `${11 * dpr}px monospace`;
+    ctx.fillText(`${fmtSec(state.viewStartSec)} - ${fmtSec(state.viewEndSec)} / ${fmtSec(state.audioDurationSec)}`, 10 * dpr, (rect.height * dpr) - 8 * dpr);
+  }
+
+  function drawAnchors(ctx, rect, dpr, anchors) {
+    const sel = getSelectedSentence();
+    const selectedIdx = sel ? getSentences().findIndex(s => s.sentence_id === sel.sentence_id) : -1;
+
+    for (const a of anchors) {
+      if (a.sec < state.viewStartSec - EPS || a.sec > state.viewEndSec + EPS) continue;
+      const x = secToX(a.sec, rect) * dpr;
+      const shared = a.refs.length > 1;
+      let isSelected = false;
+      for (const r of a.refs) {
+        if (r.idx === selectedIdx) {
+          isSelected = true;
+          break;
+        }
+      }
+      ctx.strokeStyle = isSelected ? "#22d3ee" : (shared ? "#14b8a6" : "#fbbf24");
+      ctx.lineWidth = (isSelected ? 2.2 : 1.4) * dpr;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, rect.height * dpr);
+      ctx.stroke();
+    }
+  }
+
+  function drawPlayhead(ctx, rect, dpr) {
+    const audio = el("audioPlayer");
+    const t = Number(audio.currentTime || 0);
+    if (t < state.viewStartSec || t > state.viewEndSec) return;
+    const x = secToX(t, rect) * dpr;
+    ctx.strokeStyle = "#e5eef8";
+    ctx.lineWidth = 1.2 * dpr;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, rect.height * dpr);
+    ctx.stroke();
+  }
+
+  function drawTimeline() {
+    const {rect, dpr, w, h} = getCanvasMetrics();
+    const ctx = getCanvas().getContext("2d");
+    ensureViewWindow();
+
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "#0c131a";
+    ctx.fillRect(0, 0, w, h);
+
+    drawWaveform(ctx, rect, dpr);
+    drawAnchors(ctx, rect, dpr, buildAnchors(getSentences()));
+    drawPlayhead(ctx, rect, dpr);
+  }
+
+  function requestDraw() {
+    if (state.drawRaf) return;
+    state.drawRaf = requestAnimationFrame(() => {
+      state.drawRaf = 0;
+      drawTimeline();
+    });
+  }
+
+  function selectSentence(sentenceId, opts = {}) {
+    state.currentSentenceId = sentenceId;
+    updateEditorBySelected();
+    renderSentenceTable();
+    requestDraw();
+
+    if (opts.jumpAudio) {
+      const s = getSelectedSentence();
+      if (!s) return;
+      const audio = el("audioPlayer");
+      const wasPlaying = !audio.paused;
+      audio.currentTime = Number(s.start_sec || 0);
+      if (wasPlaying) {
+        audio.play().catch(() => {});
+      }
+    }
   }
 
   async function loadTasks() {
@@ -342,39 +724,66 @@
     setMsg("加载任务详情中...");
     state.currentTask = await api(`/api/tasks/${encodeURIComponent(taskId)}`);
     renderTasks();
-    renderTaskDetail();
+    renderTaskHeader();
+    renderSentenceTable();
+    applyAudioSource(taskId);
+    decodeAudioForTask(taskId).catch(e => setMsg(String(e), true));
     if (state.currentTask.sentences && state.currentTask.sentences.length > 0) {
-      selectSentence(state.currentTask.sentences[0].sentence_id);
+      selectSentence(state.currentTask.sentences[0].sentence_id, {jumpAudio: false});
+    } else {
+      updateEditorBySelected();
     }
     setMsg(`已打开 ${taskId}`);
   }
 
   async function saveSentence() {
     if (!state.currentTaskId || !state.currentSentenceId) return;
+    const s = getSelectedSentence();
+    if (!s) return;
+
+    const startSec = Number(el("editStart").value);
+    const endSec = Number(el("editEnd").value);
+    if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) {
+      setMsg("起止时间格式错误", true);
+      return;
+    }
+    if (startSec < 0 || endSec <= startSec) {
+      setMsg("时间非法：需满足 0 <= start < end", true);
+      return;
+    }
+    s.start_sec = startSec;
+    s.end_sec = endSec;
+
     setMsg("保存句子中...");
-    await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(state.currentSentenceId)}`, {
+    const nextTask = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(state.currentSentenceId)}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         review_text_ja: el("editJa").value,
         review_text_zh: el("editZh").value,
         review_state: el("editState").value,
+        start_sec: startSec,
+        end_sec: endSec,
       }),
     });
-    await openTask(state.currentTaskId);
-    selectSentence(state.currentSentenceId);
+    state.currentTask = nextTask;
+    renderTaskHeader();
+    renderSentenceTable();
+    selectSentence(state.currentSentenceId, {jumpAudio: false});
     setMsg("保存成功");
   }
 
   async function saveTaskStatus() {
     if (!state.currentTaskId) return;
     setMsg("更新任务状态中...");
-    await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/status`, {
+    const task = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/status`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: el("taskStatus").value }),
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({status: el("taskStatus").value}),
     });
-    await openTask(state.currentTaskId);
+    state.currentTask = task;
+    renderTaskHeader();
+    renderTasks();
     setMsg("状态已更新");
   }
 
@@ -382,11 +791,11 @@
     if (!state.currentTaskId) return;
     setMsg("导出中...");
     const payload = mode === "zh"
-      ? { export_ja: false, export_zh: true }
-      : { export_ja: true, export_zh: true };
+      ? {export_ja: false, export_zh: true}
+      : {export_ja: true, export_zh: true};
     const data = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/export`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {"Content-Type": "application/json"},
       body: JSON.stringify(payload),
     });
     const files = (data.exported_files || []).join(" | ");
@@ -394,13 +803,216 @@
     setMsg(`导出完成: ${files}${warnings ? ` | 警告 ${warnings}` : ""}`);
   }
 
-  function seekAndPlay() {
-    if (!state.currentTask || !state.currentSentenceId) return;
-    const s = state.currentTask.sentences.find(x => x.sentence_id === state.currentSentenceId);
-    if (!s) return;
+  function findAnchorAtCanvasX(clientX) {
+    const rect = getCanvas().getBoundingClientRect();
+    const x = clientX - rect.left;
+    const anchors = buildAnchors(getSentences());
+    let best = null;
+    let bestDist = 1e9;
+    for (const a of anchors) {
+      const ax = secToX(a.sec, rect);
+      const d = Math.abs(ax - x);
+      if (d < bestDist) {
+        bestDist = d;
+        best = a;
+      }
+    }
+    if (!best || bestDist > 10) return null;
+    return {anchor: best, rect};
+  }
+
+  function applyAnchorSecond(anchor, sec) {
+    const arr = getSentences();
+    if (!arr.length) return {ok: false, touched: []};
+    const oldVals = [];
+    const touched = new Set();
+
+    for (const r of anchor.refs) {
+      const s = arr[r.idx];
+      if (!s) continue;
+      touched.add(r.idx);
+      if (r.kind === "start") {
+        oldVals.push({idx: r.idx, field: "start_sec", val: Number(s.start_sec || 0)});
+        s.start_sec = sec;
+      } else {
+        oldVals.push({idx: r.idx, field: "end_sec", val: Number(s.end_sec || 0)});
+        s.end_sec = sec;
+      }
+    }
+
+    for (const idx of touched) {
+      const s = arr[idx];
+      if (!s) continue;
+      if (!(Number(s.end_sec) > Number(s.start_sec))) {
+        for (const o of oldVals) {
+          arr[o.idx][o.field] = o.val;
+        }
+        return {ok: false, touched: []};
+      }
+      if (Number(s.start_sec) < 0) {
+        for (const o of oldVals) {
+          arr[o.idx][o.field] = o.val;
+        }
+        return {ok: false, touched: []};
+      }
+    }
+    return {ok: true, touched: Array.from(touched)};
+  }
+
+  async function persistTimeForIndices(indices) {
+    if (!state.currentTaskId) return;
+    const arr = getSentences();
+    for (const idx of indices) {
+      const s = arr[idx];
+      if (!s) continue;
+      await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(s.sentence_id)}`, {
+        method: "PATCH",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          start_sec: Number(s.start_sec),
+          end_sec: Number(s.end_sec),
+        }),
+      });
+    }
+  }
+
+  function handleCanvasWheel(e) {
+    const rect = getCanvas().getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const dur = Number(state.audioDurationSec || 0);
+    if (dur <= 0) return;
+    ensureViewWindow();
+    const oldSpan = state.viewEndSec - state.viewStartSec;
+
+    if (e.ctrlKey) {
+      e.preventDefault();
+      const focusSec = xToSec(x, rect);
+      let newSpan = oldSpan * (e.deltaY < 0 ? 0.84 : 1.18);
+      newSpan = clamp(newSpan, MIN_VIEW_SPAN_SEC, dur);
+      const ratio = x / Math.max(1, rect.width);
+      let newStart = focusSec - ratio * newSpan;
+      newStart = clamp(newStart, 0, Math.max(0, dur - newSpan));
+      state.viewStartSec = newStart;
+      state.viewEndSec = newStart + newSpan;
+      requestDraw();
+      return;
+    }
+
+    e.preventDefault();
+    const moveSec = (e.deltaY / 500) * oldSpan;
+    let ns = state.viewStartSec + moveSec;
+    ns = clamp(ns, 0, Math.max(0, dur - oldSpan));
+    state.viewStartSec = ns;
+    state.viewEndSec = ns + oldSpan;
+    requestDraw();
+  }
+
+  function handleCanvasMouseDown(e) {
+    const hit = findAnchorAtCanvasX(e.clientX);
+    if (!hit) return;
+    const dur = Number(state.audioDurationSec || 0);
+    state.drag = {
+      anchorKey: hit.anchor.key,
+      refs: hit.anchor.refs.map(r => ({idx: r.idx, kind: r.kind})),
+      startX: e.clientX,
+      initialSec: Number(hit.anchor.sec),
+      dur,
+      touched: [],
+      moved: false,
+    };
+  }
+
+  function handleCanvasMouseMove(e) {
+    if (!state.drag) return;
+    const rect = getCanvas().getBoundingClientRect();
+    const span = Math.max(0.0001, state.viewEndSec - state.viewStartSec);
+    const secPerPx = span / Math.max(1, rect.width);
+    const deltaPx = e.clientX - state.drag.startX;
+    const deltaSec = deltaPx * secPerPx * DRAG_SENSITIVITY;
+    const targetSec = clamp(state.drag.initialSec + deltaSec, 0, Math.max(0, state.drag.dur));
+
+    const anchors = buildAnchors(getSentences());
+    const anchor = anchors.find(a => a.key === state.drag.anchorKey);
+    if (!anchor) return;
+    const res = applyAnchorSecond(anchor, targetSec);
+    if (!res.ok) return;
+    state.drag.touched = res.touched;
+    state.drag.moved = true;
+    updateEditorBySelected();
+    renderSentenceTable();
+    requestDraw();
+  }
+
+  async function handleCanvasMouseUp() {
+    if (!state.drag) return;
+    const drag = state.drag;
+    state.drag = null;
+    if (!drag.moved || !drag.touched.length) return;
+    try {
+      setMsg("正在保存时间戳...");
+      await persistTimeForIndices(drag.touched);
+      setMsg("时间戳已保存");
+    } catch (e) {
+      setMsg(`保存时间戳失败：${e}`, true);
+    }
+  }
+
+  function applyTimeInputsLocally() {
+    const s = getSelectedSentence();
+    if (!s) return false;
+    const startSec = Number(el("editStart").value);
+    const endSec = Number(el("editEnd").value);
+    if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) {
+      setMsg("起止时间格式错误", true);
+      return false;
+    }
+    if (startSec < 0 || endSec <= startSec) {
+      setMsg("时间非法：需满足 0 <= start < end", true);
+      return false;
+    }
+    s.start_sec = startSec;
+    s.end_sec = endSec;
+    renderSentenceTable();
+    requestDraw();
+    return true;
+  }
+
+  async function persistSelectedTime() {
+    const s = getSelectedSentence();
+    if (!s || !state.currentTaskId) return;
+    try {
+      setMsg("保存时间戳中...");
+      await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(s.sentence_id)}`, {
+        method: "PATCH",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          start_sec: Number(s.start_sec),
+          end_sec: Number(s.end_sec),
+        }),
+      });
+      setMsg("时间戳已保存");
+    } catch (e) {
+      setMsg(`保存时间戳失败：${e}`, true);
+    }
+  }
+
+  function attachCanvasEvents() {
+    const canvas = getCanvas();
+    canvas.addEventListener("wheel", handleCanvasWheel, {passive: false});
+    canvas.addEventListener("mousedown", handleCanvasMouseDown);
+    window.addEventListener("mousemove", handleCanvasMouseMove);
+    window.addEventListener("mouseup", () => {
+      handleCanvasMouseUp().catch(e => setMsg(String(e), true));
+    });
+  }
+
+  function startDrawLoop() {
     const audio = el("audioPlayer");
-    audio.currentTime = Number(s.start_sec || 0);
-    audio.play().catch(() => {});
+    audio.addEventListener("timeupdate", requestDraw);
+    audio.addEventListener("seeked", requestDraw);
+    audio.addEventListener("play", requestDraw);
+    audio.addEventListener("pause", requestDraw);
+    setInterval(requestDraw, 80);
   }
 
   el("refreshTasks").onclick = () => loadTasks().catch(e => setMsg(String(e), true));
@@ -409,10 +1021,21 @@
   el("saveTaskStatus").onclick = () => saveTaskStatus().catch(e => setMsg(String(e), true));
   el("exportZh").onclick = () => exportTask("zh").catch(e => setMsg(String(e), true));
   el("exportBoth").onclick = () => exportTask("both").catch(e => setMsg(String(e), true));
-  el("seekBtn").onclick = () => seekAndPlay();
 
+  el("editStart").addEventListener("change", () => {
+    if (applyTimeInputsLocally()) {
+      persistSelectedTime().catch(e => setMsg(String(e), true));
+    }
+  });
+  el("editEnd").addEventListener("change", () => {
+    if (applyTimeInputsLocally()) {
+      persistSelectedTime().catch(e => setMsg(String(e), true));
+    }
+  });
+
+  attachCanvasEvents();
+  startDrawLoop();
   loadTasks().catch(e => setMsg(String(e), true));
 </script>
 </body>
 </html>
-

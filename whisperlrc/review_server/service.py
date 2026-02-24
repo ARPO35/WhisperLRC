@@ -175,6 +175,8 @@ class ReviewService:
         review_text_ja: str | None = None,
         review_text_zh: str | None = None,
         review_state: str | None = None,
+        start_sec: float | None = None,
+        end_sec: float | None = None,
     ) -> dict[str, Any]:
         path = self._resolve_task_path(task_id)
         payload = self._load_task(path)
@@ -197,6 +199,17 @@ class ReviewService:
             target["review_text"] = review_text_zh
         if review_state is not None:
             target["review_state"] = review_state
+        if start_sec is not None:
+            target["start_sec"] = float(start_sec)
+        if end_sec is not None:
+            target["end_sec"] = float(end_sec)
+
+        cur_start = _safe_float(target.get("start_sec"), 0.0)
+        cur_end = _safe_float(target.get("end_sec"), 0.0)
+        if cur_start < 0:
+            raise ValueError("start_sec 不能小于 0")
+        if cur_end <= cur_start:
+            raise ValueError("end_sec 必须大于 start_sec")
 
         review = payload.get("review")
         if not isinstance(review, list):
@@ -311,4 +324,3 @@ class ReviewService:
         if not audio_path.exists():
             raise FileNotFoundError(f"音频文件不存在：{audio_path}")
         return audio_path
-

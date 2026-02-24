@@ -61,6 +61,8 @@ def create_app(*, output_dir: Path) -> FastAPI:
                 review_text_ja=body.review_text_ja,
                 review_text_zh=body.review_text_zh,
                 review_state=body.review_state,
+                start_sec=body.start_sec,
+                end_sec=body.end_sec,
             )
         except Exception as e:
             _raise_http(e)
@@ -97,4 +99,3 @@ def create_app(*, output_dir: Path) -> FastAPI:
             raise
 
     return app
-
