@@ -184,6 +184,43 @@
       display: block;
       cursor: crosshair;
     }
+    .transport {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .time-label {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      color: var(--muted);
+      min-width: 150px;
+    }
+    .gain-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 240px;
+    }
+    .gain-wrap input[type="range"] {
+      flex: 1;
+      min-width: 120px;
+    }
+    .gain-val {
+      min-width: 48px;
+      text-align: right;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .hidden-audio {
+      width: 0;
+      height: 0;
+      opacity: 0;
+      pointer-events: none;
+      position: absolute;
+    }
     .panel-grid {
       display: grid;
       gap: 8px;
@@ -242,10 +279,19 @@
           <button id="exportBoth">导出JA+ZH</button>
         </div>
       </div>
-      <audio id="audioPlayer" controls style="width:100%"></audio>
+      <div class="transport">
+        <button id="playPauseBtn" class="primary">播放</button>
+        <span id="timeLabel" class="time-label">00:00.00 / 00:00.00</span>
+        <div class="gain-wrap">
+          <span class="small">波形增益</span>
+          <input id="waveGain" type="range" min="0.20" max="6.00" step="0.05" value="1.00" />
+          <span id="waveGainVal" class="gain-val">1.00x</span>
+        </div>
+      </div>
+      <audio id="audioPlayer" class="hidden-audio" preload="auto"></audio>
       <canvas id="timelineCanvas"></canvas>
       <div class="timeline-note">
-        时间轴说明：白色为播放位置，青色为字幕起止锚点；共享锚点表示前后句相接。支持拖动锚点、Ctrl+滚轮缩放。
+        波形即进度条：点击/拖动可跳转播放位置；白线为播放位置，青色为字幕起止锚点。支持拖动锚点与 Ctrl+滚轮缩放。
       </div>
     </section>
 
@@ -315,8 +361,13 @@
     currentTask: null,
     currentSentenceId: "",
     audioCtx: null,
+    audioSourceNode: null,
+    audioGainNode: null,
     audioBuffer: null,
     audioDurationSec: 0,
+    audioNormGain: 1.0,
+    waveformNormGain: 1.0,
+    waveformUserGain: 1.0,
     viewStartSec: 0,
     viewEndSec: 0,
     drag: null,
@@ -392,7 +443,10 @@
 
   function applyAudioSource(taskId) {
     const audio = el("audioPlayer");
+    audio.pause();
+    audio.currentTime = 0;
     audio.src = `/api/tasks/${encodeURIComponent(taskId)}/audio?ts=${Date.now()}`;
+    syncTransportUI();
   }
 
   async function ensureAudioContext() {
@@ -403,11 +457,80 @@
     return state.audioCtx;
   }
 
+  async function ensureAudioGraph() {
+    await ensureAudioContext();
+    if (state.audioSourceNode && state.audioGainNode) return;
+    const audio = el("audioPlayer");
+    state.audioSourceNode = state.audioCtx.createMediaElementSource(audio);
+    state.audioGainNode = state.audioCtx.createGain();
+    state.audioSourceNode.connect(state.audioGainNode);
+    state.audioGainNode.connect(state.audioCtx.destination);
+    state.audioGainNode.gain.value = state.audioNormGain;
+  }
+
+  function applyAudioGain() {
+    if (!state.audioGainNode) return;
+    state.audioGainNode.gain.value = state.audioNormGain;
+  }
+
+  function computeNormalization(buffer) {
+    const channels = Math.max(1, Number(buffer.numberOfChannels || 1));
+    const sampleCount = Math.max(1, Number(buffer.length || 1));
+    const stride = sampleCount > 1_000_000 ? 8 : 4;
+    let peak = 0;
+    let sumSq = 0;
+    let count = 0;
+
+    for (let ch = 0; ch < channels; ch += 1) {
+      const data = buffer.getChannelData(ch);
+      for (let i = 0; i < data.length; i += stride) {
+        const v = Math.abs(data[i] || 0);
+        if (v > peak) peak = v;
+        sumSq += v * v;
+        count += 1;
+      }
+    }
+    const rms = count > 0 ? Math.sqrt(sumSq / count) : 0;
+    const refPeak = Math.max(peak * 0.75, rms * 3.2, 0.0001);
+    const audioGain = clamp(0.92 / Math.max(peak, 0.0001), 0.35, 8.0);
+    const waveGain = clamp(0.82 / refPeak, 0.35, 12.0);
+    return {peak, rms, audioGain, waveGain};
+  }
+
+  function syncTransportUI() {
+    const audio = el("audioPlayer");
+    const dur = Number(state.audioDurationSec || audio.duration || 0);
+    el("playPauseBtn").textContent = audio.paused ? "播放" : "暂停";
+    el("timeLabel").textContent = `${fmtSec(audio.currentTime || 0)} / ${fmtSec(dur)}`;
+    el("waveGainVal").textContent = `${state.waveformUserGain.toFixed(2)}x`;
+  }
+
+  async function togglePlayPause() {
+    const audio = el("audioPlayer");
+    try {
+      const ctx = await ensureAudioContext();
+      await ensureAudioGraph();
+      if (ctx.state === "suspended") {
+        await ctx.resume();
+      }
+      if (audio.paused) {
+        await audio.play();
+      } else {
+        audio.pause();
+      }
+      syncTransportUI();
+    } catch (e) {
+      setMsg(`播放失败：${e}`, true);
+    }
+    requestDraw();
+  }
+
   async function decodeAudioForTask(taskId) {
     const token = ++state.audioDecodeToken;
     const url = `/api/tasks/${encodeURIComponent(taskId)}/audio?raw=1&ts=${Date.now()}`;
     try {
       const ctx = await ensureAudioContext();
+      await ensureAudioGraph();
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`加载音频失败: ${resp.status}`);
       const buffer = await resp.arrayBuffer();
@@ -415,15 +538,26 @@
       if (token !== state.audioDecodeToken) return;
       state.audioBuffer = decoded;
       state.audioDurationSec = Number(decoded.duration || 0);
+      const normalized = computeNormalization(decoded);
+      state.audioNormGain = normalized.audioGain;
+      state.waveformNormGain = normalized.waveGain;
+      applyAudioGain();
       if (state.audioDurationSec > 0) {
         state.viewStartSec = 0;
         state.viewEndSec = state.audioDurationSec;
       }
-      setMsg(`音频已加载，时长 ${fmtSec(state.audioDurationSec)}`);
+      syncTransportUI();
+      setMsg(
+        `音频已加载，时长 ${fmtSec(state.audioDurationSec)}，音频增益 ${state.audioNormGain.toFixed(2)}x，波形归一化 ${state.waveformNormGain.toFixed(2)}x`
+      );
     } catch (e) {
       if (token !== state.audioDecodeToken) return;
       state.audioBuffer = null;
       state.audioDurationSec = 0;
+      state.audioNormGain = 1.0;
+      state.waveformNormGain = 1.0;
+      applyAudioGain();
+      syncTransportUI();
       setMsg(`音频波形不可用：${e}`, true);
     }
     requestDraw();
@@ -601,6 +735,7 @@
     const endSample = Math.min(dataA.length, Math.ceil(state.viewEndSec * sampleRate));
     const range = Math.max(1, endSample - startSample);
     const samplesPerPx = Math.max(1, Math.floor(range / pxCount));
+    const totalWaveGain = state.waveformNormGain * state.waveformUserGain;
 
     ctx.strokeStyle = "#2b3b49";
     ctx.lineWidth = 1 * dpr;
@@ -620,7 +755,8 @@
         if (dataB) v = (v + Math.abs(dataB[i] || 0)) * 0.5;
         if (v > peak) peak = v;
       }
-      const hh = peak * h * 0.9;
+      const scaledPeak = clamp(peak * totalWaveGain, 0, 1.25);
+      const hh = scaledPeak * h * 0.9;
       const xx = x * dpr;
       ctx.beginPath();
       ctx.moveTo(xx, mid - hh * 0.5);
@@ -682,6 +818,7 @@
     drawWaveform(ctx, rect, dpr);
     drawAnchors(ctx, rect, dpr, buildAnchors(getSentences()));
     drawPlayhead(ctx, rect, dpr);
+    syncTransportUI();
   }
 
   function requestDraw() {
@@ -690,6 +827,21 @@
       state.drawRaf = 0;
       drawTimeline();
     });
+  }
+
+  function seekTo(sec) {
+    const audio = el("audioPlayer");
+    const dur = Number(state.audioDurationSec || audio.duration || 0);
+    if (!(dur > 0)) return;
+    audio.currentTime = clamp(sec, 0, dur);
+    requestDraw();
+  }
+
+  function seekByCanvasClientX(clientX) {
+    const rect = getCanvas().getBoundingClientRect();
+    const x = clamp(clientX - rect.left, 0, rect.width);
+    const sec = xToSec(x, rect);
+    seekTo(sec);
   }
 
   function selectSentence(sentenceId, opts = {}) {
@@ -908,10 +1060,16 @@
   }
 
   function handleCanvasMouseDown(e) {
+    e.preventDefault();
     const hit = findAnchorAtCanvasX(e.clientX);
-    if (!hit) return;
+    if (!hit) {
+      seekByCanvasClientX(e.clientX);
+      state.drag = {mode: "seek"};
+      return;
+    }
     const dur = Number(state.audioDurationSec || 0);
     state.drag = {
+      mode: "anchor",
       anchorKey: hit.anchor.key,
       refs: hit.anchor.refs.map(r => ({idx: r.idx, kind: r.kind})),
       startX: e.clientX,
@@ -924,6 +1082,11 @@
 
   function handleCanvasMouseMove(e) {
     if (!state.drag) return;
+    if (state.drag.mode === "seek") {
+      seekByCanvasClientX(e.clientX);
+      state.drag.moved = true;
+      return;
+    }
     const rect = getCanvas().getBoundingClientRect();
     const span = Math.max(0.0001, state.viewEndSec - state.viewStartSec);
     const secPerPx = span / Math.max(1, rect.width);
@@ -947,6 +1110,7 @@
     if (!state.drag) return;
     const drag = state.drag;
     state.drag = null;
+    if (drag.mode === "seek") return;
     if (!drag.moved || !drag.touched.length) return;
     try {
       setMsg("正在保存时间戳...");
@@ -1012,6 +1176,7 @@
     audio.addEventListener("seeked", requestDraw);
     audio.addEventListener("play", requestDraw);
     audio.addEventListener("pause", requestDraw);
+    audio.addEventListener("ended", requestDraw);
     setInterval(requestDraw, 80);
   }
 
@@ -1021,6 +1186,15 @@
   el("saveTaskStatus").onclick = () => saveTaskStatus().catch(e => setMsg(String(e), true));
   el("exportZh").onclick = () => exportTask("zh").catch(e => setMsg(String(e), true));
   el("exportBoth").onclick = () => exportTask("both").catch(e => setMsg(String(e), true));
+  el("playPauseBtn").onclick = () => {
+    togglePlayPause().catch(e => setMsg(String(e), true));
+  };
+  el("waveGain").addEventListener("input", () => {
+    const v = Number(el("waveGain").value);
+    state.waveformUserGain = Number.isFinite(v) ? clamp(v, 0.2, 6.0) : 1.0;
+    syncTransportUI();
+    requestDraw();
+  });
 
   el("editStart").addEventListener("change", () => {
     if (applyTimeInputsLocally()) {
@@ -1035,6 +1209,7 @@
 
   attachCanvasEvents();
   startDrawLoop();
+  syncTransportUI();
   loadTasks().catch(e => setMsg(String(e), true));
 </script>
 </body>
