@@ -153,12 +153,52 @@
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 13px;
+      font-size: 14px;
     }
     th, td {
       padding: 9px;
       border-bottom: 1px solid #1d2a36;
       vertical-align: top;
+    }
+    th {
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .subtitle-ja {
+      font-size: 16px;
+      line-height: 1.45;
+      font-weight: 600;
+      word-break: break-word;
+    }
+    .subtitle-zh {
+      margin-top: 4px;
+      font-size: 15px;
+      line-height: 1.45;
+      color: var(--muted);
+      word-break: break-word;
+    }
+    .conf-row {
+      margin-top: 4px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3px;
+      align-items: flex-end;
+    }
+    .conf-token {
+      display: inline-flex;
+      align-items: flex-end;
+      padding: 0 1px 1px 1px;
+      border-bottom: 2px solid var(--conf-color, #6f8192);
+      white-space: pre;
+      line-height: 1.2;
+      color: #d6e4f2;
+      font-size: 13px;
+    }
+    .conf-empty {
+      margin-top: 4px;
+      font-size: 12px;
+      color: #6f8192;
     }
     tbody tr {
       cursor: pointer;
@@ -420,6 +460,41 @@
     return Math.max(min, Math.min(max, v));
   }
 
+  function escapeHtml(text) {
+    const s = String(text || "");
+    return s
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll("\"", "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function confidenceToColor(conf) {
+    if (!Number.isFinite(conf)) return "#6f8192";
+    const v = clamp(Number(conf), 0, 1);
+    const h = Math.round(v * 120);
+    return `hsl(${h} 78% 48%)`;
+  }
+
+  function buildConfidenceTokenHtml(sentence) {
+    const words = Array.isArray(sentence.word_items) ? sentence.word_items : [];
+    const items = [];
+    for (const w of words) {
+      if (!w || typeof w !== "object") continue;
+      const text = String(w.word || "");
+      if (!text) continue;
+      const conf = Number(w.confidence);
+      const color = confidenceToColor(conf);
+      const title = Number.isFinite(conf) ? `置信度 ${conf.toFixed(3)}` : "无置信度";
+      items.push(`<span class="conf-token" style="--conf-color:${color}" title="${title}">${escapeHtml(text)}</span>`);
+    }
+    if (!items.length) {
+      return `<div class="conf-empty">词级置信度数据不可用</div>`;
+    }
+    return `<div class="conf-row">${items.join("")}</div>`;
+  }
+
   function almostEqual(a, b) {
     return Math.abs(Number(a) - Number(b)) <= EPS;
   }
@@ -646,13 +721,16 @@
       if (s.sentence_id === state.currentSentenceId) cls.push("sel");
       if (s.sentence_id === state.activeSentenceId) cls.push("active");
       tr.className = cls.join(" ");
-      const previewJa = getSentenceDisplayJa(s).slice(0, 80);
-      const previewZh = getSentenceDisplayZh(s).slice(0, 80);
+      const previewJa = getSentenceDisplayJa(s);
+      const previewZh = getSentenceDisplayZh(s);
+      const confHtml = buildConfidenceTokenHtml(s);
+      const zhHtml = previewZh ? `<div class="subtitle-zh">${escapeHtml(previewZh)}</div>` : "";
       tr.innerHTML = `
         <td>${fmtSec(s.start_sec)} - ${fmtSec(s.end_sec)}</td>
         <td>
-          <div>${previewJa}</div>
-          <div class="muted">${previewZh}</div>
+          <div class="subtitle-ja">${escapeHtml(previewJa)}</div>
+          ${confHtml}
+          ${zhHtml}
         </td>
         <td><span class="status-pill">${s.review_state || "pending"}</span></td>
         <td>

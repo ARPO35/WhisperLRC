@@ -199,6 +199,16 @@ class ReviewService:
                     "review_text_zh": str(s.get("review_zh_text") or s.get("review_text") or ""),
                     "review_state": str(s.get("review_state") or "pending"),
                     "translation_status": str(s.get("translation_status") or ""),
+                    "word_items": [
+                        {
+                            "word": str(w.get("word") or ""),
+                            "start_sec": _safe_float(w.get("start_sec"), 0.0) if w.get("start_sec") is not None else None,
+                            "end_sec": _safe_float(w.get("end_sec"), 0.0) if w.get("end_sec") is not None else None,
+                            "confidence": _safe_float(w.get("confidence"), 0.0) if w.get("confidence") is not None else None,
+                        }
+                        for w in (s.get("word_items") if isinstance(s.get("word_items"), list) else [])
+                        if isinstance(w, dict)
+                    ],
                 }
             )
 
