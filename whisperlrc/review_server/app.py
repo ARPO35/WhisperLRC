@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from whisperlrc.review_server.schemas import ExportRequest, SentencePatchRequest, TaskStatusPatchRequest
+from whisperlrc.review_server.schemas import ExportRequest, InsertSentenceRequest, SentencePatchRequest, TaskStatusPatchRequest
 from whisperlrc.review_server.service import ReviewService
 
 
@@ -64,6 +64,26 @@ def create_app(*, output_dir: Path) -> FastAPI:
                 start_sec=body.start_sec,
                 end_sec=body.end_sec,
             )
+        except Exception as e:
+            _raise_http(e)
+            raise
+
+    @app.post("/api/tasks/{task_id}/sentences/{sentence_id}/insert_after")
+    def insert_sentence_after(task_id: str, sentence_id: str, body: InsertSentenceRequest) -> dict[str, Any]:
+        try:
+            return service.insert_sentence_after(
+                task_id=task_id,
+                sentence_id=sentence_id,
+                min_duration_sec=body.min_duration_sec,
+            )
+        except Exception as e:
+            _raise_http(e)
+            raise
+
+    @app.delete("/api/tasks/{task_id}/sentences/{sentence_id}")
+    def delete_sentence(task_id: str, sentence_id: str) -> dict[str, Any]:
+        try:
+            return service.delete_sentence(task_id=task_id, sentence_id=sentence_id)
         except Exception as e:
             _raise_http(e)
             raise

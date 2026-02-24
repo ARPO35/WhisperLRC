@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,9 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 class ReviewService:
+    MIN_SENTENCE_SEC = 0.05
+    DEFAULT_INSERT_MIN_DURATION_SEC = 0.5
+
     def __init__(self, output_dir: Path) -> None:
         self.output_dir = output_dir.resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -73,6 +77,44 @@ class ReviewService:
     def _save_task(self, path: Path, payload: dict[str, Any]) -> None:
         payload["updated_at"] = _now_iso()
         _atomic_write_json(path, payload)
+
+    def _next_sentence_id(self, sentences: list[dict[str, Any]]) -> str:
+        max_id = 0
+        for s in sentences:
+            sid = str(s.get("sentence_id") or "")
+            m = re.match(r"^s_(\d+)$", sid)
+            if not m:
+                continue
+            n = _safe_int(m.group(1), 0)
+            if n > max_id:
+                max_id = n
+        return f"s_{max_id + 1:04d}"
+
+    def _clamp_insert_min_duration(self, value: float | None) -> float:
+        if value is None:
+            return self.DEFAULT_INSERT_MIN_DURATION_SEC
+        v = _safe_float(value, self.DEFAULT_INSERT_MIN_DURATION_SEC)
+        return max(self.MIN_SENTENCE_SEC, v)
+
+    def _audio_duration_hint(self, payload: dict[str, Any]) -> float | None:
+        source_meta = payload.get("source_meta")
+        if isinstance(source_meta, dict):
+            for k in ("duration_sec", "audio_duration_sec", "duration"):
+                if k in source_meta:
+                    v = _safe_float(source_meta.get(k), 0.0)
+                    if v > 0:
+                        return v
+        for k in ("duration_sec", "audio_duration_sec", "duration"):
+            if k in payload:
+                v = _safe_float(payload.get(k), 0.0)
+                if v > 0:
+                    return v
+        return None
+
+    def _mark_in_review_status(self, payload: dict[str, Any]) -> None:
+        status = str(payload.get("status") or "").strip()
+        if status in {"todo", "asr_done", "ok"}:
+            payload["status"] = "in_review"
 
     def _build_task_summary(self, path: Path, payload: dict[str, Any]) -> dict[str, Any]:
         sentences = payload.get("sentences")
@@ -233,10 +275,127 @@ class ReviewService:
             found["review_state"] = review_state
         found["reviewed_at"] = _now_iso()
 
-        status = str(payload.get("status") or "").strip()
-        if status in {"todo", "asr_done", "ok"}:
-            payload["status"] = "in_review"
+        self._mark_in_review_status(payload)
 
+        self._save_task(path, payload)
+        return self.get_task(task_id)
+
+    def insert_sentence_after(
+        self,
+        task_id: str,
+        sentence_id: str,
+        *,
+        min_duration_sec: float | None = None,
+    ) -> dict[str, Any]:
+        path = self._resolve_task_path(task_id)
+        payload = self._load_task(path)
+        sentences_obj = payload.get("sentences")
+        if not isinstance(sentences_obj, list):
+            raise ValueError("任务不包含 sentences 数组")
+
+        sentences = [s for s in sentences_obj if isinstance(s, dict)]
+        if not sentences:
+            raise ValueError("任务中没有可插入的句子")
+
+        idx = -1
+        for i, s in enumerate(sentences):
+            if str(s.get("sentence_id") or "") == sentence_id:
+                idx = i
+                break
+        if idx < 0:
+            raise FileNotFoundError(f"句子不存在：{sentence_id}")
+
+        cur = sentences[idx]
+        next_item = sentences[idx + 1] if idx + 1 < len(sentences) else None
+        min_dur = self._clamp_insert_min_duration(min_duration_sec)
+        cur_start = _safe_float(cur.get("start_sec"), 0.0)
+        cur_end = _safe_float(cur.get("end_sec"), cur_start + self.MIN_SENTENCE_SEC)
+        cur_end = max(cur_end, cur_start + self.MIN_SENTENCE_SEC)
+
+        if next_item is not None:
+            next_start = _safe_float(next_item.get("start_sec"), cur_end)
+            gap = next_start - cur_end
+            if gap >= min_dur:
+                new_start = cur_end
+                new_end = cur_end + min_dur
+            elif gap >= self.MIN_SENTENCE_SEC:
+                new_start = cur_end
+                new_end = next_start
+            else:
+                cur_len = cur_end - cur_start
+                max_shrink = max(0.0, cur_len - self.MIN_SENTENCE_SEC)
+                required = self.MIN_SENTENCE_SEC - gap
+                shrink = min(max_shrink, max(0.0, required))
+                new_start = cur_end - shrink
+                cur["end_sec"] = new_start
+                available = next_start - new_start
+                if available >= self.MIN_SENTENCE_SEC:
+                    new_end = min(next_start, new_start + min_dur)
+                    new_end = max(new_end, new_start + self.MIN_SENTENCE_SEC)
+                else:
+                    new_end = new_start + self.MIN_SENTENCE_SEC
+        else:
+            new_start = cur_end
+            new_end = new_start + min_dur
+            duration_hint = self._audio_duration_hint(payload)
+            if duration_hint is not None and duration_hint > new_start + self.MIN_SENTENCE_SEC:
+                new_end = min(new_end, duration_hint)
+            new_end = max(new_end, new_start + self.MIN_SENTENCE_SEC)
+
+        new_sentence = {
+            "sentence_id": self._next_sentence_id(sentences),
+            "start_sec": float(max(0.0, new_start)),
+            "end_sec": float(max(new_end, new_start + self.MIN_SENTENCE_SEC)),
+            "ja_text": "",
+            "zh_text": "",
+            "review_ja_text": "",
+            "review_zh_text": "",
+            "review_text": "",
+            "review_state": "pending",
+            "translation_status": "",
+        }
+
+        sentences.insert(idx + 1, new_sentence)
+        payload["sentences"] = sentences
+        self._mark_in_review_status(payload)
+        self._save_task(path, payload)
+        return self.get_task(task_id)
+
+    def delete_sentence(self, task_id: str, sentence_id: str) -> dict[str, Any]:
+        path = self._resolve_task_path(task_id)
+        payload = self._load_task(path)
+        sentences_obj = payload.get("sentences")
+        if not isinstance(sentences_obj, list):
+            raise ValueError("任务不包含 sentences 数组")
+
+        sentences = [s for s in sentences_obj if isinstance(s, dict)]
+        if len(sentences) <= 1:
+            raise ValueError("至少保留一条字幕，不能删除最后一条")
+
+        idx = -1
+        for i, s in enumerate(sentences):
+            if str(s.get("sentence_id") or "") == sentence_id:
+                idx = i
+                break
+        if idx < 0:
+            raise FileNotFoundError(f"句子不存在：{sentence_id}")
+
+        sentences.pop(idx)
+        if 0 < idx < len(sentences):
+            prev_item = sentences[idx - 1]
+            next_item = sentences[idx]
+            prev_start = _safe_float(prev_item.get("start_sec"), 0.0)
+            next_start = _safe_float(next_item.get("start_sec"), prev_start + self.MIN_SENTENCE_SEC)
+            prev_item["end_sec"] = max(next_start, prev_start + self.MIN_SENTENCE_SEC)
+
+        review_obj = payload.get("review")
+        if isinstance(review_obj, list):
+            payload["review"] = [
+                item for item in review_obj if not (isinstance(item, dict) and str(item.get("sentence_id") or "") == sentence_id)
+            ]
+
+        payload["sentences"] = sentences
+        self._mark_in_review_status(payload)
         self._save_task(path, payload)
         return self.get_task(task_id)
 

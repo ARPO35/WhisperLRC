@@ -170,6 +170,27 @@
     tbody tr.sel {
       background: var(--selected);
     }
+    tbody tr.active {
+      background: rgba(255, 255, 255, 0.08);
+    }
+    tbody tr.sel.active {
+      background: #274155;
+    }
+    .ops {
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+    .op-btn {
+      padding: 4px 8px;
+      font-size: 12px;
+      border-radius: 6px;
+      background: #15202b;
+    }
+    .op-btn.danger {
+      border-color: #6a2323;
+      color: #ffb4b4;
+    }
     .timeline-note {
       margin-top: 6px;
       font-size: 12px;
@@ -291,7 +312,7 @@
       <audio id="audioPlayer" class="hidden-audio" preload="auto"></audio>
       <canvas id="timelineCanvas"></canvas>
       <div class="timeline-note">
-        波形即进度条：点击/拖动可跳转播放位置；白线为播放位置，青色为字幕起止锚点。支持拖动锚点与 Ctrl+滚轮缩放。
+        波形即进度条：点击/拖动可跳转播放位置；白线为播放位置，淡白覆盖为当前字幕区间，青色为字幕起止锚点。支持拖动锚点与 Ctrl+滚轮缩放。
       </div>
     </section>
 
@@ -301,8 +322,9 @@
           <thead>
             <tr>
               <th style="width:130px;">时间</th>
-              <th>原文 / 译文</th>
+              <th>内容</th>
               <th style="width:90px;">校对</th>
+              <th style="width:140px;">操作</th>
             </tr>
           </thead>
           <tbody id="sentenceBody"></tbody>
@@ -315,10 +337,10 @@
           <span id="sentenceId" class="status-pill">未选择</span>
         </div>
         <div class="panel-grid">
-          <label>原文 JA</label>
-          <textarea id="origJa" readonly></textarea>
-          <label>机器译文 ZH</label>
-          <textarea id="origZh" readonly></textarea>
+          <label>日语</label>
+          <textarea id="editJa" placeholder="输入日语文本"></textarea>
+          <label>中文</label>
+          <textarea id="editZh" placeholder="输入中文文本"></textarea>
           <div class="time-grid">
             <div>
               <label>起始秒 start_sec</label>
@@ -330,16 +352,6 @@
             </div>
           </div>
           <div class="small">可在此精确输入时间；时间轴拖动灵敏度较低用于微调。</div>
-          <label>校对 JA</label>
-          <textarea id="editJa" placeholder="可留空"></textarea>
-          <label>校对 ZH</label>
-          <textarea id="editZh" placeholder="可留空"></textarea>
-          <label>校对状态</label>
-          <select id="editState">
-            <option value="pending">pending</option>
-            <option value="accepted">accepted</option>
-            <option value="needs_check">needs_check</option>
-          </select>
           <div class="row">
             <button id="saveSentence" class="primary">保存句子</button>
           </div>
@@ -360,6 +372,7 @@
     currentTaskId: "",
     currentTask: null,
     currentSentenceId: "",
+    activeSentenceId: "",
     audioCtx: null,
     audioSourceNode: null,
     audioGainNode: null,
@@ -413,6 +426,14 @@
   function getSentences() {
     if (!state.currentTask || !Array.isArray(state.currentTask.sentences)) return [];
     return state.currentTask.sentences;
+  }
+
+  function getSentenceDisplayJa(s) {
+    return String((s && (s.review_text_ja || s.ja_text)) || "");
+  }
+
+  function getSentenceDisplayZh(s) {
+    return String((s && (s.review_text_zh || s.zh_text)) || "");
   }
 
   function renderTasks() {
@@ -568,27 +589,50 @@
     return arr.find(s => s.sentence_id === state.currentSentenceId) || null;
   }
 
+  function getActiveSentence() {
+    const arr = getSentences();
+    return arr.find(s => s.sentence_id === state.activeSentenceId) || null;
+  }
+
+  function findActiveSentenceIdByTime(sec) {
+    const arr = getSentences();
+    if (!arr.length) return "";
+    for (let i = 0; i < arr.length; i += 1) {
+      const s = arr[i];
+      const start = Number(s.start_sec || 0);
+      const end = Number(s.end_sec || 0);
+      if (sec + EPS >= start && sec < end) return s.sentence_id;
+    }
+    const last = arr[arr.length - 1];
+    if (last && sec + EPS >= Number(last.start_sec || 0) && sec <= Number(last.end_sec || 0) + EPS) {
+      return last.sentence_id;
+    }
+    return "";
+  }
+
+  function refreshActiveSentence() {
+    const audio = el("audioPlayer");
+    const nextId = findActiveSentenceIdByTime(Number(audio.currentTime || 0));
+    if (nextId === state.activeSentenceId) return false;
+    state.activeSentenceId = nextId;
+    return true;
+  }
+
   function updateEditorBySelected() {
     const s = getSelectedSentence();
     if (!s) {
       el("sentenceId").textContent = "未选择";
-      el("origJa").value = "";
-      el("origZh").value = "";
       el("editJa").value = "";
       el("editZh").value = "";
       el("editStart").value = "";
       el("editEnd").value = "";
-      el("editState").value = "pending";
       return;
     }
     el("sentenceId").textContent = s.sentence_id;
-    el("origJa").value = s.ja_text || "";
-    el("origZh").value = s.zh_text || "";
-    el("editJa").value = s.review_text_ja || "";
-    el("editZh").value = s.review_text_zh || "";
+    el("editJa").value = getSentenceDisplayJa(s);
+    el("editZh").value = getSentenceDisplayZh(s);
     el("editStart").value = Number(s.start_sec || 0).toFixed(3);
     el("editEnd").value = Number(s.end_sec || 0).toFixed(3);
-    el("editState").value = s.review_state || "pending";
   }
 
   function renderSentenceTable() {
@@ -597,17 +641,35 @@
     const arr = getSentences();
     for (const s of arr) {
       const tr = document.createElement("tr");
-      if (s.sentence_id === state.currentSentenceId) tr.className = "sel";
-      const preview = String((s.review_text_zh || s.zh_text || "")).slice(0, 80);
+      const cls = [];
+      if (s.sentence_id === state.currentSentenceId) cls.push("sel");
+      if (s.sentence_id === state.activeSentenceId) cls.push("active");
+      tr.className = cls.join(" ");
+      const previewJa = getSentenceDisplayJa(s).slice(0, 80);
+      const previewZh = getSentenceDisplayZh(s).slice(0, 80);
       tr.innerHTML = `
         <td>${fmtSec(s.start_sec)} - ${fmtSec(s.end_sec)}</td>
         <td>
-          <div>${s.ja_text || ""}</div>
-          <div class="muted">${preview}</div>
+          <div>${previewJa}</div>
+          <div class="muted">${previewZh}</div>
         </td>
         <td><span class="status-pill">${s.review_state || "pending"}</span></td>
+        <td>
+          <div class="ops">
+            <button class="op-btn act-insert">后插</button>
+            <button class="op-btn danger act-delete">删除</button>
+          </div>
+        </td>
       `;
       tr.onclick = () => selectSentence(s.sentence_id, {jumpAudio: true});
+      tr.querySelector(".act-insert").onclick = (e) => {
+        e.stopPropagation();
+        insertAfterSentence(s.sentence_id).catch(err => setMsg(String(err), true));
+      };
+      tr.querySelector(".act-delete").onclick = (e) => {
+        e.stopPropagation();
+        deleteSentenceById(s.sentence_id).catch(err => setMsg(String(err), true));
+      };
       tbody.appendChild(tr);
     }
   }
@@ -640,6 +702,19 @@
     span = clamp(span, MIN_VIEW_SPAN_SEC, dur);
     state.viewStartSec = clamp(state.viewStartSec, 0, Math.max(0, dur - span));
     state.viewEndSec = state.viewStartSec + span;
+  }
+
+  function ensureTimeVisibleCentered(sec) {
+    ensureViewWindow();
+    if (sec >= state.viewStartSec && sec <= state.viewEndSec) return false;
+    const dur = Number(state.audioDurationSec || 0);
+    if (!(dur > 0)) return false;
+    const span = Math.max(MIN_VIEW_SPAN_SEC, state.viewEndSec - state.viewStartSec);
+    let start = sec - span / 2;
+    start = clamp(start, 0, Math.max(0, dur - span));
+    state.viewStartSec = start;
+    state.viewEndSec = start + span;
+    return true;
   }
 
   function buildAnchors(sentences) {
@@ -769,6 +844,22 @@
     ctx.fillText(`${fmtSec(state.viewStartSec)} - ${fmtSec(state.viewEndSec)} / ${fmtSec(state.audioDurationSec)}`, 10 * dpr, (rect.height * dpr) - 8 * dpr);
   }
 
+  function drawActiveRangeOverlay(ctx, rect, dpr) {
+    const active = getActiveSentence();
+    if (!active) return;
+    const start = Number(active.start_sec || 0);
+    const end = Number(active.end_sec || 0);
+    if (!(end > start)) return;
+    if (end < state.viewStartSec || start > state.viewEndSec) return;
+    const visStart = clamp(start, state.viewStartSec, state.viewEndSec);
+    const visEnd = clamp(end, state.viewStartSec, state.viewEndSec);
+    const x1 = secToX(visStart, rect) * dpr;
+    const x2 = secToX(visEnd, rect) * dpr;
+    const width = Math.max(1, x2 - x1);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.14)";
+    ctx.fillRect(x1, 0, width, rect.height * dpr);
+  }
+
   function drawAnchors(ctx, rect, dpr, anchors) {
     const sel = getSelectedSentence();
     const selectedIdx = sel ? getSentences().findIndex(s => s.sentence_id === sel.sentence_id) : -1;
@@ -816,6 +907,7 @@
     ctx.fillRect(0, 0, w, h);
 
     drawWaveform(ctx, rect, dpr);
+    drawActiveRangeOverlay(ctx, rect, dpr);
     drawAnchors(ctx, rect, dpr, buildAnchors(getSentences()));
     drawPlayhead(ctx, rect, dpr);
     syncTransportUI();
@@ -855,10 +947,13 @@
       if (!s) return;
       const audio = el("audioPlayer");
       const wasPlaying = !audio.paused;
-      audio.currentTime = Number(s.start_sec || 0);
+      const targetSec = Number(s.start_sec || 0);
+      ensureTimeVisibleCentered(targetSec);
+      audio.currentTime = targetSec;
       if (wasPlaying) {
         audio.play().catch(() => {});
       }
+      requestDraw();
     }
   }
 
@@ -873,6 +968,7 @@
   async function openTask(taskId) {
     state.currentTaskId = taskId;
     state.currentSentenceId = "";
+    state.activeSentenceId = "";
     setMsg("加载任务详情中...");
     state.currentTask = await api(`/api/tasks/${encodeURIComponent(taskId)}`);
     renderTasks();
@@ -905,6 +1001,8 @@
     }
     s.start_sec = startSec;
     s.end_sec = endSec;
+    s.review_text_ja = el("editJa").value;
+    s.review_text_zh = el("editZh").value;
 
     setMsg("保存句子中...");
     const nextTask = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(state.currentSentenceId)}`, {
@@ -913,7 +1011,6 @@
       body: JSON.stringify({
         review_text_ja: el("editJa").value,
         review_text_zh: el("editZh").value,
-        review_state: el("editState").value,
         start_sec: startSec,
         end_sec: endSec,
       }),
@@ -953,6 +1050,70 @@
     const files = (data.exported_files || []).join(" | ");
     const warnings = (data.warnings || []).length;
     setMsg(`导出完成: ${files}${warnings ? ` | 警告 ${warnings}` : ""}`);
+  }
+
+  async function insertAfterSentence(sentenceId) {
+    if (!state.currentTaskId) return;
+    const oldIds = new Set(getSentences().map(s => String(s.sentence_id || "")));
+    setMsg("正在插入字幕...");
+    const nextTask = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(sentenceId)}/insert_after`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({}),
+    });
+    state.currentTask = nextTask;
+    renderTaskHeader();
+    renderSentenceTable();
+    let insertedId = "";
+    for (const s of getSentences()) {
+      const sid = String(s.sentence_id || "");
+      if (!oldIds.has(sid)) {
+        insertedId = sid;
+        break;
+      }
+    }
+    if (insertedId) {
+      selectSentence(insertedId, {jumpAudio: true});
+    } else {
+      requestDraw();
+    }
+    setMsg("插入成功");
+  }
+
+  async function deleteSentenceById(sentenceId) {
+    if (!state.currentTaskId) return;
+    const arr = getSentences();
+    const idx = arr.findIndex(s => String(s.sentence_id || "") === sentenceId);
+    if (idx < 0) return;
+    const canDelete = window.confirm(`确认删除字幕 ${sentenceId} 吗？`);
+    if (!canDelete) return;
+
+    let fallbackId = "";
+    if (idx + 1 < arr.length) {
+      fallbackId = String(arr[idx + 1].sentence_id || "");
+    } else if (idx - 1 >= 0) {
+      fallbackId = String(arr[idx - 1].sentence_id || "");
+    }
+
+    setMsg("正在删除字幕...");
+    const nextTask = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(sentenceId)}`, {
+      method: "DELETE",
+    });
+    state.currentTask = nextTask;
+    renderTaskHeader();
+    renderSentenceTable();
+
+    const hasFallback = getSentences().some(s => String(s.sentence_id || "") === fallbackId);
+    if (hasFallback) {
+      selectSentence(fallbackId, {jumpAudio: false});
+    } else if (getSentences().length > 0) {
+      selectSentence(String(getSentences()[0].sentence_id || ""), {jumpAudio: false});
+    } else {
+      state.currentSentenceId = "";
+      updateEditorBySelected();
+      requestDraw();
+    }
+    setMsg("删除成功");
   }
 
   function findAnchorAtCanvasX(clientX) {
@@ -1172,12 +1333,18 @@
 
   function startDrawLoop() {
     const audio = el("audioPlayer");
-    audio.addEventListener("timeupdate", requestDraw);
-    audio.addEventListener("seeked", requestDraw);
-    audio.addEventListener("play", requestDraw);
-    audio.addEventListener("pause", requestDraw);
-    audio.addEventListener("ended", requestDraw);
-    setInterval(requestDraw, 80);
+    const onAudioTick = () => {
+      if (refreshActiveSentence()) {
+        renderSentenceTable();
+      }
+      requestDraw();
+    };
+    audio.addEventListener("timeupdate", onAudioTick);
+    audio.addEventListener("seeked", onAudioTick);
+    audio.addEventListener("play", onAudioTick);
+    audio.addEventListener("pause", onAudioTick);
+    audio.addEventListener("ended", onAudioTick);
+    setInterval(onAudioTick, 120);
   }
 
   el("refreshTasks").onclick = () => loadTasks().catch(e => setMsg(String(e), true));

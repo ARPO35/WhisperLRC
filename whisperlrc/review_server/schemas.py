@@ -17,6 +17,10 @@ class SentencePatchRequest(BaseModel):
     end_sec: float | None = Field(default=None, description="句子结束秒")
 
 
+class InsertSentenceRequest(BaseModel):
+    min_duration_sec: float | None = Field(default=None, description="插入句子的最小时长（秒）")
+
+
 class TaskStatusPatchRequest(BaseModel):
     status: TaskStatus = Field(description="任务状态")
 
