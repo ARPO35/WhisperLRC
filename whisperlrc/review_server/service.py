@@ -201,10 +201,36 @@ class ReviewService:
                     "translation_status": str(s.get("translation_status") or ""),
                     "word_items": [
                         {
-                            "word": str(w.get("word") or ""),
-                            "start_sec": _safe_float(w.get("start_sec"), 0.0) if w.get("start_sec") is not None else None,
-                            "end_sec": _safe_float(w.get("end_sec"), 0.0) if w.get("end_sec") is not None else None,
-                            "confidence": _safe_float(w.get("confidence"), 0.0) if w.get("confidence") is not None else None,
+                            "word": str(
+                                w.get("word")
+                                or w.get("text")
+                                or w.get("token")
+                                or w.get("token_text")
+                                or ""
+                            ),
+                            "start_sec": _safe_float(
+                                w.get("start_sec", w.get("start")),
+                                0.0,
+                            )
+                            if (w.get("start_sec") is not None or w.get("start") is not None)
+                            else None,
+                            "end_sec": _safe_float(
+                                w.get("end_sec", w.get("end")),
+                                0.0,
+                            )
+                            if (w.get("end_sec") is not None or w.get("end") is not None)
+                            else None,
+                            "confidence": _safe_float(
+                                w.get("confidence", w.get("conf", w.get("probability", w.get("prob")))),
+                                0.0,
+                            )
+                            if (
+                                w.get("confidence") is not None
+                                or w.get("conf") is not None
+                                or w.get("probability") is not None
+                                or w.get("prob") is not None
+                            )
+                            else None,
                         }
                         for w in (s.get("word_items") if isinstance(s.get("word_items"), list) else [])
                         if isinstance(w, dict)

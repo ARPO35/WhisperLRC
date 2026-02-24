@@ -482,9 +482,10 @@
     const items = [];
     for (const w of words) {
       if (!w || typeof w !== "object") continue;
-      const text = String(w.word || "");
+      const text = String(w.word || w.text || w.token || w.token_text || "");
       if (!text) continue;
-      const conf = Number(w.confidence);
+      const confRaw = (w.confidence ?? w.conf ?? w.probability ?? w.prob);
+      const conf = Number(confRaw);
       const color = confidenceToColor(conf);
       const title = Number.isFinite(conf) ? `置信度 ${conf.toFixed(3)}` : "无置信度";
       items.push(`<span class="conf-token" style="--conf-color:${color}" title="${title}">${escapeHtml(text)}</span>`);
