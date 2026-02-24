@@ -385,6 +385,7 @@
     viewEndSec: 0,
     drag: null,
     drawRaf: 0,
+    playLoopRaf: 0,
     lastCanvasW: 0,
     lastCanvasH: 0,
     audioDecodeToken: 0,
@@ -656,7 +657,7 @@
         <td><span class="status-pill">${s.review_state || "pending"}</span></td>
         <td>
           <div class="ops">
-            <button class="op-btn act-insert">后插</button>
+            <button class="op-btn act-insert">插入</button>
             <button class="op-btn danger act-delete">删除</button>
           </div>
         </td>
@@ -1331,20 +1332,54 @@
     });
   }
 
+  function runAudioTick() {
+    if (refreshActiveSentence()) {
+      renderSentenceTable();
+    }
+    requestDraw();
+  }
+
+  function stopPlayLoop() {
+    if (!state.playLoopRaf) return;
+    cancelAnimationFrame(state.playLoopRaf);
+    state.playLoopRaf = 0;
+  }
+
+  function startPlayLoop() {
+    if (state.playLoopRaf) return;
+    const audio = el("audioPlayer");
+    const step = () => {
+      state.playLoopRaf = 0;
+      runAudioTick();
+      if (!audio.paused && !audio.ended) {
+        state.playLoopRaf = requestAnimationFrame(step);
+      }
+    };
+    state.playLoopRaf = requestAnimationFrame(step);
+  }
+
   function startDrawLoop() {
     const audio = el("audioPlayer");
-    const onAudioTick = () => {
-      if (refreshActiveSentence()) {
-        renderSentenceTable();
+    audio.addEventListener("timeupdate", runAudioTick);
+    audio.addEventListener("seeked", runAudioTick);
+    audio.addEventListener("play", startPlayLoop);
+    audio.addEventListener("pause", () => {
+      stopPlayLoop();
+      runAudioTick();
+    });
+    audio.addEventListener("ended", () => {
+      stopPlayLoop();
+      runAudioTick();
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        stopPlayLoop();
+        return;
       }
-      requestDraw();
-    };
-    audio.addEventListener("timeupdate", onAudioTick);
-    audio.addEventListener("seeked", onAudioTick);
-    audio.addEventListener("play", onAudioTick);
-    audio.addEventListener("pause", onAudioTick);
-    audio.addEventListener("ended", onAudioTick);
-    setInterval(onAudioTick, 120);
+      if (!audio.paused && !audio.ended) {
+        startPlayLoop();
+      }
+    });
   }
 
   el("refreshTasks").onclick = () => loadTasks().catch(e => setMsg(String(e), true));
