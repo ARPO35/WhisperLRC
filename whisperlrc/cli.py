@@ -1799,7 +1799,7 @@ def _run_review_web_server(state: SessionState, *, host: str, port: int, output_
         {"host": host, "port": port, "output_dir": str(output_dir)},
     )
     try:
-        run_review_server(output_dir=output_dir, host=host, port=port)
+        run_review_server(output_dir=output_dir, host=host, port=port, config_path=state.config_path)
         _append_operation_log(
             state,
             "review_web_server_stop",

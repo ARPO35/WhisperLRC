@@ -19,6 +19,7 @@
       --danger: #ef4444;
       --ok: #22c55e;
       --selected: #1f2f3d;
+      --selected-multi: #2a3f52;
     }
     * { box-sizing: border-box; }
     html, body {
@@ -79,6 +80,9 @@
       align-items: center;
       gap: 8px;
       flex-wrap: wrap;
+    }
+    .row.top-actions {
+      justify-content: flex-end;
     }
     input, select, textarea, button {
       border: 1px solid var(--line-2);
@@ -209,6 +213,9 @@
     tbody tr.sel {
       background: var(--selected);
     }
+    tbody tr.multi-sel {
+      background: var(--selected-multi);
+    }
     tbody tr.active {
       background: rgba(255, 255, 255, 0.08);
     }
@@ -285,6 +292,59 @@
       display: grid;
       gap: 8px;
     }
+    .hidden {
+      display: none !important;
+    }
+    .editor-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .dirty-pill {
+      border: 1px solid #8b5a10;
+      border-radius: 999px;
+      color: #ffd68a;
+      background: #3b2b12;
+      padding: 2px 8px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .progress-toast {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      width: min(420px, calc(100vw - 32px));
+      border: 1px solid var(--line-2);
+      border-radius: 10px;
+      background: rgba(15, 23, 31, 0.96);
+      box-shadow: 0 8px 26px rgba(0, 0, 0, 0.45);
+      padding: 10px;
+      z-index: 50;
+    }
+    .progress-title {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .progress-bar {
+      height: 9px;
+      border: 1px solid var(--line-2);
+      border-radius: 999px;
+      overflow: hidden;
+      background: #0e141b;
+      margin-bottom: 6px;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #0ea5a3 0%, #22c55e 100%);
+      transition: width 0.18s ease;
+    }
+    .progress-meta {
+      font-size: 12px;
+      color: var(--muted);
+      font-family: Consolas, "Courier New", monospace;
+    }
     .time-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -326,7 +386,7 @@
           <div id="taskTitle" class="title">未选择任务</div>
           <div id="taskMeta" class="muted"></div>
         </div>
-        <div class="row">
+        <div class="row top-actions">
           <select id="taskStatus">
             <option value="todo">todo</option>
             <option value="in_review">in_review</option>
@@ -334,7 +394,8 @@
             <option value="partial">partial</option>
             <option value="failed">failed</option>
           </select>
-          <button id="saveTaskStatus">更新状态</button>
+          <span id="dirtyBadge" class="dirty-pill hidden">未保存</span>
+          <button id="saveTaskFile" class="primary">保存文件 (Ctrl+S)</button>
           <button id="exportZh" class="primary">导出ZH</button>
           <button id="exportBoth">导出JA+ZH</button>
         </div>
@@ -376,29 +437,44 @@
           <span id="sentenceId" class="status-pill">未选择</span>
         </div>
         <div class="panel-grid">
-          <label>日语</label>
-          <textarea id="editJa" placeholder="输入日语文本"></textarea>
-          <label>中文</label>
-          <textarea id="editZh" placeholder="输入中文文本"></textarea>
-          <div class="time-grid">
-            <div>
-              <label>起始秒 start_sec</label>
-              <input id="editStart" type="number" step="0.001" min="0" />
+          <div id="multiHint" class="small hidden"></div>
+
+          <div id="singleEditor" class="panel-grid">
+            <label>日语</label>
+            <textarea id="editJa" placeholder="输入日语文本"></textarea>
+            <label>中文</label>
+            <textarea id="editZh" placeholder="输入中文文本"></textarea>
+            <div class="time-grid">
+              <div>
+                <label>起始秒 start_sec</label>
+                <input id="editStart" type="number" step="0.001" min="0" />
+              </div>
+              <div>
+                <label>结束秒 end_sec</label>
+                <input id="editEnd" type="number" step="0.001" min="0" />
+              </div>
             </div>
-            <div>
-              <label>结束秒 end_sec</label>
-              <input id="editEnd" type="number" step="0.001" min="0" />
-            </div>
+            <div class="small">可在此精确输入时间；时间轴拖动灵敏度较低用于微调。</div>
           </div>
-          <div class="small">可在此精确输入时间；时间轴拖动灵敏度较低用于微调。</div>
-          <div class="row">
-            <button id="saveSentence" class="primary">保存句子</button>
+
+          <div class="editor-actions">
+            <button id="actRelisten">重新识别</button>
+            <button id="actAutoTranslate">自动翻译</button>
+            <button id="actRetranslate" class="primary">一键重翻</button>
           </div>
           <div id="message" class="small mono"></div>
         </div>
       </div>
     </section>
   </main>
+</div>
+
+<div id="progressToast" class="progress-toast hidden">
+  <div id="progressTitle" class="progress-title">处理中</div>
+  <div class="progress-bar">
+    <div id="progressFill" class="progress-fill"></div>
+  </div>
+  <div id="progressMeta" class="progress-meta"></div>
 </div>
 
 <script>
@@ -411,7 +487,12 @@
     currentTaskId: "",
     currentTask: null,
     currentSentenceId: "",
+    selectedSentenceIds: new Set(),
+    selectionAnchorIndex: -1,
     activeSentenceId: "",
+    dirty: false,
+    actionRunning: false,
+    progressHideTimer: 0,
     audioCtx: null,
     audioSourceNode: null,
     audioGainNode: null,
@@ -436,6 +517,59 @@
     const node = el("message");
     node.textContent = text || "";
     node.style.color = isError ? "#ef4444" : "#8ea0b1";
+  }
+
+  function setDirty(v) {
+    state.dirty = Boolean(v);
+    el("dirtyBadge").classList.toggle("hidden", !state.dirty);
+    updateTaskMeta();
+  }
+
+  function markDirty() {
+    setDirty(true);
+    updateTaskMeta();
+  }
+
+  function updateTaskMeta() {
+    if (!state.currentTask) {
+      el("taskMeta").textContent = "";
+      return;
+    }
+    const statusText = state.dirty ? "未保存修改" : String(state.currentTask.status || "todo");
+    el("taskMeta").textContent = `状态: ${statusText} | 句子: ${getSentences().length}`;
+  }
+
+  function showProgress(title, total) {
+    if (state.progressHideTimer) {
+      clearTimeout(state.progressHideTimer);
+      state.progressHideTimer = 0;
+    }
+    el("progressTitle").textContent = title || "处理中";
+    el("progressFill").style.width = "0%";
+    el("progressMeta").textContent = `0/${Math.max(1, Number(total || 1))}`;
+    el("progressToast").classList.remove("hidden");
+  }
+
+  function updateProgress(current, total, detail = "") {
+    const safeTotal = Math.max(1, Number(total || 1));
+    const safeCurrent = clamp(Number(current || 0), 0, safeTotal);
+    const pct = (safeCurrent / safeTotal) * 100;
+    el("progressFill").style.width = `${pct.toFixed(1)}%`;
+    el("progressMeta").textContent = `${safeCurrent}/${safeTotal}${detail ? ` | ${detail}` : ""}`;
+  }
+
+  function finishProgress(detail, isError = false) {
+    el("progressMeta").textContent = detail || (isError ? "失败" : "完成");
+    if (!isError) {
+      el("progressFill").style.width = "100%";
+    }
+    if (state.progressHideTimer) {
+      clearTimeout(state.progressHideTimer);
+    }
+    state.progressHideTimer = setTimeout(() => {
+      el("progressToast").classList.add("hidden");
+      state.progressHideTimer = 0;
+    }, isError ? 2500 : 1200);
   }
 
   async function api(url, options = {}) {
@@ -510,6 +644,94 @@
 
   function getSentenceDisplayZh(s) {
     return String((s && (s.review_text_zh || s.zh_text)) || "");
+  }
+
+  function normalizeTask(task) {
+    const t = (task && typeof task === "object") ? task : {};
+    const sentencesRaw = Array.isArray(t.sentences) ? t.sentences : [];
+    const sentences = sentencesRaw.map((s, i) => ({
+      sentence_id: String((s && s.sentence_id) || `s_${String(i + 1).padStart(4, "0")}`),
+      start_sec: Number((s && s.start_sec) || 0),
+      end_sec: Number((s && s.end_sec) || 0),
+      ja_text: String((s && s.ja_text) || ""),
+      zh_text: String((s && s.zh_text) || ""),
+      review_text_ja: String((s && s.review_text_ja) || ""),
+      review_text_zh: String((s && s.review_text_zh) || ""),
+      review_state: String((s && s.review_state) || "pending"),
+      translation_status: String((s && s.translation_status) || ""),
+      segment_confidence: (s && s.segment_confidence) == null ? null : Number(s.segment_confidence),
+      word_items: Array.isArray(s && s.word_items) ? s.word_items : [],
+    }));
+    return {
+      ...t,
+      status: String(t.status || "todo"),
+      sentences,
+    };
+  }
+
+  function getSentenceIndexById(sentenceId) {
+    return getSentences().findIndex(s => String(s.sentence_id || "") === String(sentenceId || ""));
+  }
+
+  function getSelectedIdsOrdered() {
+    const out = [];
+    for (const s of getSentences()) {
+      const sid = String(s.sentence_id || "");
+      if (state.selectedSentenceIds.has(sid)) out.push(sid);
+    }
+    return out;
+  }
+
+  function getSelectionSegments(ids) {
+    if (!ids.length) return [];
+    const indexMap = new Map();
+    const arr = getSentences();
+    for (let i = 0; i < arr.length; i += 1) {
+      indexMap.set(String(arr[i].sentence_id || ""), i);
+    }
+    const sorted = ids.slice().sort((a, b) => (indexMap.get(a) ?? 1e9) - (indexMap.get(b) ?? 1e9));
+    const segments = [];
+    let cur = [];
+    for (const sid of sorted) {
+      if (!cur.length) {
+        cur = [sid];
+        continue;
+      }
+      const prev = cur[cur.length - 1];
+      const prevIdx = indexMap.get(prev);
+      const idx = indexMap.get(sid);
+      if (prevIdx != null && idx != null && idx === prevIdx + 1) {
+        cur.push(sid);
+      } else {
+        segments.push(cur);
+        cur = [sid];
+      }
+    }
+    if (cur.length) segments.push(cur);
+    return segments;
+  }
+
+  function buildDraftSentence(s) {
+    return {
+      sentence_id: String(s.sentence_id || ""),
+      start_sec: Number(s.start_sec || 0),
+      end_sec: Number(s.end_sec || 0),
+      ja_text: String(s.ja_text || ""),
+      zh_text: String(s.zh_text || ""),
+      review_text_ja: String(s.review_text_ja || ""),
+      review_text_zh: String(s.review_text_zh || ""),
+      review_state: String(s.review_state || "pending"),
+      translation_status: String(s.translation_status || ""),
+      segment_confidence: s.segment_confidence == null ? null : Number(s.segment_confidence),
+      word_items: Array.isArray(s.word_items) ? s.word_items : [],
+    };
+  }
+
+  function buildSavePayload() {
+    return {
+      status: String(el("taskStatus").value || (state.currentTask ? state.currentTask.status : "todo")),
+      sentences: getSentences().map(s => buildDraftSentence(s)),
+    };
   }
 
   function renderTasks() {
@@ -695,6 +917,16 @@
   }
 
   function updateEditorBySelected() {
+    const selectedIds = getSelectedIdsOrdered();
+    const isMulti = selectedIds.length > 1;
+    el("singleEditor").classList.toggle("hidden", isMulti);
+    el("multiHint").classList.toggle("hidden", !isMulti);
+    if (isMulti) {
+      el("sentenceId").textContent = `${selectedIds.length}句`;
+      el("multiHint").textContent = `已多选 ${selectedIds.length} 句。右侧仅支持批量动作。`;
+      return;
+    }
+
     const s = getSelectedSentence();
     if (!s) {
       el("sentenceId").textContent = "未选择";
@@ -716,10 +948,14 @@
     tbody.innerHTML = "";
     const arr = getSentences();
     for (const s of arr) {
+      const sid = String(s.sentence_id || "");
       const tr = document.createElement("tr");
       const cls = [];
-      if (s.sentence_id === state.currentSentenceId) cls.push("sel");
-      if (s.sentence_id === state.activeSentenceId) cls.push("active");
+      if (state.selectedSentenceIds.has(sid)) {
+        if (sid === state.currentSentenceId) cls.push("sel");
+        else cls.push("multi-sel");
+      }
+      if (sid === state.activeSentenceId) cls.push("active");
       tr.className = cls.join(" ");
       const previewJa = getSentenceDisplayJa(s);
       const previewZh = getSentenceDisplayZh(s);
@@ -739,14 +975,14 @@
           </div>
         </td>
       `;
-      tr.onclick = () => selectSentence(s.sentence_id, {jumpAudio: true});
+      tr.onclick = (e) => selectSentence(sid, {jumpAudio: true, shiftKey: !!(e && e.shiftKey)});
       tr.querySelector(".act-insert").onclick = (e) => {
         e.stopPropagation();
-        insertAfterSentence(s.sentence_id).catch(err => setMsg(String(err), true));
+        insertAfterSentence(sid).catch(err => setMsg(String(err), true));
       };
       tr.querySelector(".act-delete").onclick = (e) => {
         e.stopPropagation();
-        deleteSentenceById(s.sentence_id).catch(err => setMsg(String(err), true));
+        deleteSentenceById(sid).catch(err => setMsg(String(err), true));
       };
       tbody.appendChild(tr);
     }
@@ -760,8 +996,8 @@
     }
     const t = state.currentTask;
     el("taskTitle").textContent = `${t.file_id} (${t.task_id})`;
-    el("taskMeta").textContent = `状态: ${t.status} | 句子: ${t.sentences.length}`;
     el("taskStatus").value = t.status || "todo";
+    updateTaskMeta();
   }
 
   function ensureViewWindow() {
@@ -939,8 +1175,8 @@
   }
 
   function drawAnchors(ctx, rect, dpr, anchors) {
-    const sel = getSelectedSentence();
-    const selectedIdx = sel ? getSentences().findIndex(s => s.sentence_id === sel.sentence_id) : -1;
+    const selectedIds = state.selectedSentenceIds;
+    const arr = getSentences();
 
     for (const a of anchors) {
       if (a.sec < state.viewStartSec - EPS || a.sec > state.viewEndSec + EPS) continue;
@@ -948,7 +1184,8 @@
       const shared = a.refs.length > 1;
       let isSelected = false;
       for (const r of a.refs) {
-        if (r.idx === selectedIdx) {
+        const s = arr[r.idx];
+        if (s && selectedIds.has(String(s.sentence_id || ""))) {
           isSelected = true;
           break;
         }
@@ -1015,7 +1252,24 @@
   }
 
   function selectSentence(sentenceId, opts = {}) {
-    state.currentSentenceId = sentenceId;
+    const arr = getSentences();
+    const idx = arr.findIndex(s => String(s.sentence_id || "") === String(sentenceId || ""));
+    if (idx < 0) return;
+
+    if (opts.shiftKey && state.selectionAnchorIndex >= 0 && state.selectionAnchorIndex < arr.length) {
+      const start = Math.min(state.selectionAnchorIndex, idx);
+      const end = Math.max(state.selectionAnchorIndex, idx);
+      const nextSet = new Set();
+      for (let i = start; i <= end; i += 1) {
+        nextSet.add(String(arr[i].sentence_id || ""));
+      }
+      state.selectedSentenceIds = nextSet;
+      state.currentSentenceId = String(sentenceId);
+    } else {
+      state.currentSentenceId = String(sentenceId);
+      state.selectedSentenceIds = new Set([String(sentenceId)]);
+      state.selectionAnchorIndex = idx;
+    }
     updateEditorBySelected();
     renderSentenceTable();
     requestDraw();
@@ -1044,78 +1298,77 @@
   }
 
   async function openTask(taskId) {
+    if (state.dirty) {
+      const ok = window.confirm("当前任务有未保存修改，切换任务会丢失草稿，是否继续？");
+      if (!ok) return;
+    }
     state.currentTaskId = taskId;
     state.currentSentenceId = "";
+    state.selectedSentenceIds = new Set();
+    state.selectionAnchorIndex = -1;
     state.activeSentenceId = "";
     setMsg("加载任务详情中...");
-    state.currentTask = await api(`/api/tasks/${encodeURIComponent(taskId)}`);
+    state.currentTask = normalizeTask(await api(`/api/tasks/${encodeURIComponent(taskId)}`));
+    setDirty(false);
     renderTasks();
     renderTaskHeader();
     renderSentenceTable();
     applyAudioSource(taskId);
     decodeAudioForTask(taskId).catch(e => setMsg(String(e), true));
     if (state.currentTask.sentences && state.currentTask.sentences.length > 0) {
-      selectSentence(state.currentTask.sentences[0].sentence_id, {jumpAudio: false});
+      const firstId = String(state.currentTask.sentences[0].sentence_id || "");
+      state.selectedSentenceIds = new Set([firstId]);
+      state.currentSentenceId = firstId;
+      state.selectionAnchorIndex = 0;
+      updateEditorBySelected();
+      renderSentenceTable();
+      requestDraw();
     } else {
       updateEditorBySelected();
     }
     setMsg(`已打开 ${taskId}`);
   }
 
-  async function saveSentence() {
-    if (!state.currentTaskId || !state.currentSentenceId) return;
-    const s = getSelectedSentence();
-    if (!s) return;
-
-    const startSec = Number(el("editStart").value);
-    const endSec = Number(el("editEnd").value);
-    if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) {
-      setMsg("起止时间格式错误", true);
-      return;
-    }
-    if (startSec < 0 || endSec <= startSec) {
-      setMsg("时间非法：需满足 0 <= start < end", true);
-      return;
-    }
-    s.start_sec = startSec;
-    s.end_sec = endSec;
-    s.review_text_ja = el("editJa").value;
-    s.review_text_zh = el("editZh").value;
-
-    setMsg("保存句子中...");
-    const nextTask = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(state.currentSentenceId)}`, {
-      method: "PATCH",
+  async function saveTaskFile() {
+    if (!state.currentTaskId || !state.currentTask) return;
+    const payload = buildSavePayload();
+    setMsg("保存文件中...");
+    const nextTask = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}`, {
+      method: "PUT",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        review_text_ja: el("editJa").value,
-        review_text_zh: el("editZh").value,
-        start_sec: startSec,
-        end_sec: endSec,
-      }),
+      body: JSON.stringify(payload),
     });
-    state.currentTask = nextTask;
-    renderTaskHeader();
-    renderSentenceTable();
-    selectSentence(state.currentSentenceId, {jumpAudio: false});
-    setMsg("保存成功");
-  }
-
-  async function saveTaskStatus() {
-    if (!state.currentTaskId) return;
-    setMsg("更新任务状态中...");
-    const task = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/status`, {
-      method: "PATCH",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({status: el("taskStatus").value}),
-    });
-    state.currentTask = task;
+    const preferred = state.currentSentenceId;
+    state.currentTask = normalizeTask(nextTask);
     renderTaskHeader();
     renderTasks();
-    setMsg("状态已更新");
+    const idx = preferred ? getSentenceIndexById(preferred) : -1;
+    if (idx >= 0) {
+      state.selectedSentenceIds = new Set([preferred]);
+      state.currentSentenceId = preferred;
+      state.selectionAnchorIndex = idx;
+    } else if (getSentences().length > 0) {
+      const firstId = String(getSentences()[0].sentence_id || "");
+      state.selectedSentenceIds = new Set([firstId]);
+      state.currentSentenceId = firstId;
+      state.selectionAnchorIndex = 0;
+    } else {
+      state.selectedSentenceIds = new Set();
+      state.currentSentenceId = "";
+      state.selectionAnchorIndex = -1;
+    }
+    setDirty(false);
+    updateEditorBySelected();
+    renderSentenceTable();
+    requestDraw();
+    setMsg("保存成功");
   }
 
   async function exportTask(mode) {
     if (!state.currentTaskId) return;
+    if (state.dirty) {
+      setMsg("当前有未保存修改，导出将使用已保存版本。", true);
+    }
     setMsg("导出中...");
     const payload = mode === "zh"
       ? {export_ja: false, export_zh: true}
@@ -1131,67 +1384,96 @@
   }
 
   async function insertAfterSentence(sentenceId) {
-    if (!state.currentTaskId) return;
-    const oldIds = new Set(getSentences().map(s => String(s.sentence_id || "")));
-    setMsg("正在插入字幕...");
-    const nextTask = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(sentenceId)}/insert_after`, {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({}),
-    });
-    state.currentTask = nextTask;
-    renderTaskHeader();
-    renderSentenceTable();
-    let insertedId = "";
-    for (const s of getSentences()) {
-      const sid = String(s.sentence_id || "");
-      if (!oldIds.has(sid)) {
-        insertedId = sid;
-        break;
+    if (!state.currentTask) return;
+    const arr = getSentences();
+    const idx = arr.findIndex(s => String(s.sentence_id || "") === String(sentenceId || ""));
+    if (idx < 0) return;
+    const cur = arr[idx];
+    const next = idx + 1 < arr.length ? arr[idx + 1] : null;
+    const curStart = Number(cur.start_sec || 0);
+    const curEnd = Math.max(Number(cur.end_sec || 0), curStart + 0.05);
+    let newStart = curEnd;
+    let newEnd = curEnd + 0.5;
+    if (next) {
+      const nextStart = Number(next.start_sec || curEnd);
+      const gap = nextStart - curEnd;
+      if (gap >= 0.5) {
+        newStart = curEnd;
+        newEnd = curEnd + 0.5;
+      } else if (gap >= 0.05) {
+        newStart = curEnd;
+        newEnd = nextStart;
+      } else {
+        const boundary = (curEnd + nextStart) / 2;
+        newStart = Math.max(curStart + 0.05, boundary - 0.05);
+        newEnd = Math.max(newStart + 0.05, boundary + 0.05);
+        cur.end_sec = newStart;
+        next.start_sec = newEnd;
       }
     }
-    if (insertedId) {
-      selectSentence(insertedId, {jumpAudio: true});
-    } else {
-      requestDraw();
+    newEnd = Math.max(newEnd, newStart + 0.05);
+
+    let maxId = 0;
+    for (const s of arr) {
+      const sid = String(s.sentence_id || "");
+      const m = /^s_(\d+)$/.exec(sid);
+      if (!m) continue;
+      const n = Number(m[1]);
+      if (Number.isFinite(n) && n > maxId) maxId = n;
     }
-    setMsg("插入成功");
+    const insertedId = `s_${String(maxId + 1).padStart(4, "0")}`;
+    arr.splice(idx + 1, 0, {
+      sentence_id: insertedId,
+      start_sec: newStart,
+      end_sec: newEnd,
+      ja_text: "",
+      zh_text: "",
+      review_text_ja: "",
+      review_text_zh: "",
+      review_state: "pending",
+      translation_status: "",
+      segment_confidence: null,
+      word_items: [],
+    });
+    markDirty();
+    updateEditorBySelected();
+    renderSentenceTable();
+    selectSentence(insertedId, {jumpAudio: true});
+    setMsg("插入成功（草稿），请保存文件。");
   }
 
   async function deleteSentenceById(sentenceId) {
-    if (!state.currentTaskId) return;
+    if (!state.currentTask) return;
     const arr = getSentences();
     const idx = arr.findIndex(s => String(s.sentence_id || "") === sentenceId);
     if (idx < 0) return;
-    const canDelete = window.confirm(`确认删除字幕 ${sentenceId} 吗？`);
-    if (!canDelete) return;
-
+    if (arr.length <= 1) {
+      setMsg("至少保留一条字幕，不能删除最后一条。", true);
+      return;
+    }
     let fallbackId = "";
     if (idx + 1 < arr.length) {
       fallbackId = String(arr[idx + 1].sentence_id || "");
     } else if (idx - 1 >= 0) {
       fallbackId = String(arr[idx - 1].sentence_id || "");
     }
-
-    setMsg("正在删除字幕...");
-    const nextTask = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(sentenceId)}`, {
-      method: "DELETE",
-    });
-    state.currentTask = nextTask;
-    renderTaskHeader();
-    renderSentenceTable();
-
+    arr.splice(idx, 1);
+    if (idx > 0 && idx < arr.length) {
+      const prev = arr[idx - 1];
+      const next = arr[idx];
+      prev.end_sec = Math.max(Number(next.start_sec || 0), Number(prev.start_sec || 0) + 0.05);
+    }
+    markDirty();
     const hasFallback = getSentences().some(s => String(s.sentence_id || "") === fallbackId);
-    if (hasFallback) {
-      selectSentence(fallbackId, {jumpAudio: false});
-    } else if (getSentences().length > 0) {
-      selectSentence(String(getSentences()[0].sentence_id || ""), {jumpAudio: false});
-    } else {
+    if (hasFallback) selectSentence(fallbackId, {jumpAudio: false});
+    else if (getSentences().length > 0) selectSentence(String(getSentences()[0].sentence_id || ""), {jumpAudio: false});
+    else {
       state.currentSentenceId = "";
+      state.selectedSentenceIds = new Set();
       updateEditorBySelected();
       requestDraw();
     }
-    setMsg("删除成功");
+    setMsg("删除成功（草稿），请保存文件。");
   }
 
   function findAnchorAtCanvasX(clientX) {
@@ -1248,23 +1530,6 @@
       }
     }
     return {ok: true, touched: Array.from(touched)};
-  }
-
-  async function persistTimeForIndices(indices) {
-    if (!state.currentTaskId) return;
-    const arr = getSentences();
-    for (const idx of indices) {
-      const s = arr[idx];
-      if (!s) continue;
-      await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(s.sentence_id)}`, {
-        method: "PATCH",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          start_sec: Number(s.start_sec),
-          end_sec: Number(s.end_sec),
-        }),
-      });
-    }
   }
 
   function handleCanvasWheel(e) {
@@ -1351,13 +1616,8 @@
     state.drag = null;
     if (drag.mode === "seek") return;
     if (!drag.moved || !drag.touched.length) return;
-    try {
-      setMsg("正在保存时间戳...");
-      await persistTimeForIndices(drag.touched);
-      setMsg("时间戳已保存");
-    } catch (e) {
-      setMsg(`保存时间戳失败：${e}`, true);
-    }
+    markDirty();
+    setMsg("时间戳已更新到草稿，请保存文件。");
   }
 
   function applyTimeInputsLocally() {
@@ -1377,25 +1637,146 @@
     s.end_sec = endSec;
     renderSentenceTable();
     requestDraw();
+    markDirty();
     return true;
   }
 
-  async function persistSelectedTime() {
+  function updateSelectedSentenceFromEditor() {
     const s = getSelectedSentence();
-    if (!s || !state.currentTaskId) return;
+    if (!s) return;
+    s.review_text_ja = el("editJa").value;
+    s.review_text_zh = el("editZh").value;
+    markDirty();
+    renderSentenceTable();
+  }
+
+  function getActionTargetIds() {
+    const ids = getSelectedIdsOrdered();
+    if (ids.length) return ids;
+    if (state.currentSentenceId) return [String(state.currentSentenceId)];
+    return [];
+  }
+
+  async function applyRelisten(ids, stageOffset, stageTotal) {
+    let ok = 0;
+    let fail = 0;
+    for (let i = 0; i < ids.length; i += 1) {
+      const sid = ids[i];
+      const idx = getSentenceIndexById(sid);
+      if (idx < 0) continue;
+      updateProgress(stageOffset + i + 1, stageTotal, `重识别 ${sid}`);
+      const sentence = getSentences()[idx];
+      try {
+        const resp = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(sid)}/relisten_once`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({draft_sentence: buildDraftSentence(sentence)}),
+        });
+        const ja = String(resp.ja_text || "").trim();
+        if (ja) {
+          sentence.review_text_ja = ja;
+          ok += 1;
+        } else {
+          fail += 1;
+        }
+      } catch (_e) {
+        fail += 1;
+      }
+    }
+    return {ok, fail};
+  }
+
+  async function applyTranslate(ids, stageOffset, stageTotal) {
+    const segments = getSelectionSegments(ids);
+    let ok = 0;
+    let fail = 0;
+    let processed = 0;
+    for (const seg of segments) {
+      const draftSentences = [];
+      for (const sid of seg) {
+        const idx = getSentenceIndexById(sid);
+        if (idx >= 0) draftSentences.push(buildDraftSentence(getSentences()[idx]));
+      }
+      try {
+        const resp = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/auto_translate_batch`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            sentence_ids: seg,
+            draft_sentences: draftSentences,
+          }),
+        });
+        const trans = Array.isArray(resp.translations) ? resp.translations : [];
+        const map = new Map(trans.map(x => [String(x.sentence_id || ""), String(x.zh_text || "")]));
+        for (const sid of seg) {
+          processed += 1;
+          updateProgress(stageOffset + processed, stageTotal, `翻译 ${sid}`);
+          const idx = getSentenceIndexById(sid);
+          if (idx < 0) {
+            fail += 1;
+            continue;
+          }
+          const zh = map.get(sid);
+          if (typeof zh === "string") {
+            getSentences()[idx].review_text_zh = zh;
+            ok += 1;
+          } else {
+            fail += 1;
+          }
+        }
+      } catch (_e) {
+        for (const sid of seg) {
+          processed += 1;
+          updateProgress(stageOffset + processed, stageTotal, `翻译 ${sid}`);
+          fail += 1;
+        }
+      }
+    }
+    return {ok, fail};
+  }
+
+  async function runBatchAction(kind) {
+    if (!state.currentTaskId || !state.currentTask || state.actionRunning) return;
+    const ids = getActionTargetIds();
+    if (!ids.length) {
+      setMsg("请先选择句子。", true);
+      return;
+    }
+    const titleMap = {
+      relisten: "重新识别",
+      auto_translate: "自动翻译",
+      retranslate: "一键重翻",
+    };
+    const total = kind === "retranslate" ? ids.length * 2 : ids.length;
+    state.actionRunning = true;
+    showProgress(titleMap[kind] || "处理中", total);
+    let ok = 0;
+    let fail = 0;
     try {
-      setMsg("保存时间戳中...");
-      await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(s.sentence_id)}`, {
-        method: "PATCH",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          start_sec: Number(s.start_sec),
-          end_sec: Number(s.end_sec),
-        }),
-      });
-      setMsg("时间戳已保存");
-    } catch (e) {
-      setMsg(`保存时间戳失败：${e}`, true);
+      if (kind === "relisten") {
+        const r = await applyRelisten(ids, 0, total);
+        ok += r.ok;
+        fail += r.fail;
+      } else if (kind === "auto_translate") {
+        const r = await applyTranslate(ids, 0, total);
+        ok += r.ok;
+        fail += r.fail;
+      } else if (kind === "retranslate") {
+        const r1 = await applyRelisten(ids, 0, total);
+        ok += r1.ok;
+        fail += r1.fail;
+        const r2 = await applyTranslate(ids, ids.length, total);
+        ok += r2.ok;
+        fail += r2.fail;
+      }
+      markDirty();
+      updateEditorBySelected();
+      renderSentenceTable();
+      requestDraw();
+      finishProgress(`完成 | 成功 ${ok} | 失败 ${fail}`, fail > 0);
+      setMsg(`${titleMap[kind]}完成：成功 ${ok}，失败 ${fail}。请保存文件。`, fail > 0);
+    } finally {
+      state.actionRunning = false;
     }
   }
 
@@ -1459,10 +1840,15 @@
     });
   }
 
-  el("refreshTasks").onclick = () => loadTasks().catch(e => setMsg(String(e), true));
+  el("refreshTasks").onclick = () => {
+    if (state.dirty) {
+      const ok = window.confirm("存在未保存修改，刷新任务列表将丢失草稿，是否继续？");
+      if (!ok) return;
+    }
+    loadTasks().catch(e => setMsg(String(e), true));
+  };
   el("taskFilter").oninput = () => renderTasks();
-  el("saveSentence").onclick = () => saveSentence().catch(e => setMsg(String(e), true));
-  el("saveTaskStatus").onclick = () => saveTaskStatus().catch(e => setMsg(String(e), true));
+  el("saveTaskFile").onclick = () => saveTaskFile().catch(e => setMsg(String(e), true));
   el("exportZh").onclick = () => exportTask("zh").catch(e => setMsg(String(e), true));
   el("exportBoth").onclick = () => exportTask("both").catch(e => setMsg(String(e), true));
   el("playPauseBtn").onclick = () => {
@@ -1474,20 +1860,42 @@
     syncTransportUI();
     requestDraw();
   });
-
+  el("taskStatus").addEventListener("change", () => {
+    if (!state.currentTask) return;
+    state.currentTask.status = String(el("taskStatus").value || "todo");
+    markDirty();
+  });
+  el("editJa").addEventListener("input", () => updateSelectedSentenceFromEditor());
+  el("editZh").addEventListener("input", () => updateSelectedSentenceFromEditor());
   el("editStart").addEventListener("change", () => {
     if (applyTimeInputsLocally()) {
-      persistSelectedTime().catch(e => setMsg(String(e), true));
+      setMsg("时间已更新到草稿，请保存文件。");
     }
   });
   el("editEnd").addEventListener("change", () => {
     if (applyTimeInputsLocally()) {
-      persistSelectedTime().catch(e => setMsg(String(e), true));
+      setMsg("时间已更新到草稿，请保存文件。");
     }
+  });
+  el("actRelisten").onclick = () => runBatchAction("relisten").catch(e => setMsg(String(e), true));
+  el("actAutoTranslate").onclick = () => runBatchAction("auto_translate").catch(e => setMsg(String(e), true));
+  el("actRetranslate").onclick = () => runBatchAction("retranslate").catch(e => setMsg(String(e), true));
+  document.addEventListener("keydown", (e) => {
+    const k = String(e.key || "").toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && k === "s") {
+      e.preventDefault();
+      saveTaskFile().catch(err => setMsg(String(err), true));
+    }
+  });
+  window.addEventListener("beforeunload", (e) => {
+    if (!state.dirty) return;
+    e.preventDefault();
+    e.returnValue = "";
   });
 
   attachCanvasEvents();
   startDrawLoop();
+  setDirty(false);
   syncTransportUI();
   loadTasks().catch(e => setMsg(String(e), true));
 </script>

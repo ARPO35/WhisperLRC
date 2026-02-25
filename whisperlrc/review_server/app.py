@@ -7,7 +7,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from whisperlrc.review_server.schemas import ExportRequest, InsertSentenceRequest, SentencePatchRequest, TaskStatusPatchRequest
+from whisperlrc.review_server.schemas import (
+    BatchAutoTranslateRequest,
+    ExportRequest,
+    InsertSentenceRequest,
+    SentenceActionRequest,
+    SentencePatchRequest,
+    TaskSaveRequest,
+    TaskStatusPatchRequest,
+)
 from whisperlrc.review_server.service import ReviewService
 
 
@@ -17,9 +25,17 @@ def _raise_http(err: Exception) -> None:
     raise HTTPException(status_code=400, detail=str(err)) from err
 
 
-def create_app(*, output_dir: Path) -> FastAPI:
+def _model_to_dict(model: Any) -> dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    if hasattr(model, "dict"):
+        return model.dict()
+    return dict(model)
+
+
+def create_app(*, output_dir: Path, config_path: Path | None = None) -> FastAPI:
     app = FastAPI(title="WhisperLRC Review UI", version="1.0.0")
-    service = ReviewService(output_dir=output_dir)
+    service = ReviewService(output_dir=output_dir, config_path=config_path)
     static_dir = Path(__file__).resolve().parent / "static"
     index_file = static_dir / "index.html"
 
@@ -48,6 +64,14 @@ def create_app(*, output_dir: Path) -> FastAPI:
     def get_task(task_id: str) -> dict[str, Any]:
         try:
             return service.get_task(task_id)
+        except Exception as e:
+            _raise_http(e)
+            raise
+
+    @app.put("/api/tasks/{task_id}")
+    def save_task(task_id: str, body: TaskSaveRequest) -> dict[str, Any]:
+        try:
+            return service.save_task_snapshot(task_id=task_id, status=body.status, sentences=[_model_to_dict(x) for x in body.sentences])
         except Exception as e:
             _raise_http(e)
             raise
@@ -84,6 +108,42 @@ def create_app(*, output_dir: Path) -> FastAPI:
     def delete_sentence(task_id: str, sentence_id: str) -> dict[str, Any]:
         try:
             return service.delete_sentence(task_id=task_id, sentence_id=sentence_id)
+        except Exception as e:
+            _raise_http(e)
+            raise
+
+    @app.post("/api/tasks/{task_id}/sentences/{sentence_id}/relisten_once")
+    def relisten_sentence_once(task_id: str, sentence_id: str, body: SentenceActionRequest) -> dict[str, Any]:
+        try:
+            return service.relisten_sentence_once(
+                task_id=task_id,
+                sentence_id=sentence_id,
+                draft_sentence=(_model_to_dict(body.draft_sentence) if body.draft_sentence is not None else None),
+            )
+        except Exception as e:
+            _raise_http(e)
+            raise
+
+    @app.post("/api/tasks/{task_id}/sentences/{sentence_id}/auto_translate")
+    def auto_translate_sentence(task_id: str, sentence_id: str, body: SentenceActionRequest) -> dict[str, Any]:
+        try:
+            return service.auto_translate_sentence(
+                task_id=task_id,
+                sentence_id=sentence_id,
+                draft_sentence=(_model_to_dict(body.draft_sentence) if body.draft_sentence is not None else None),
+            )
+        except Exception as e:
+            _raise_http(e)
+            raise
+
+    @app.post("/api/tasks/{task_id}/auto_translate_batch")
+    def auto_translate_batch(task_id: str, body: BatchAutoTranslateRequest) -> dict[str, Any]:
+        try:
+            return service.auto_translate_sentences(
+                task_id=task_id,
+                sentence_ids=body.sentence_ids,
+                draft_sentences=[_model_to_dict(x) for x in body.draft_sentences],
+            )
         except Exception as e:
             _raise_http(e)
             raise
