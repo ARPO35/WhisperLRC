@@ -14,7 +14,13 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Any, TextIO
 
-from whisperlrc.config import AppConfig, load_config, save_config
+from whisperlrc.config import (
+    LLM_API_KEY_ENV_VAR,
+    AppConfig,
+    load_config,
+    load_config_with_meta,
+    save_config,
+)
 from whisperlrc.logging import setup_logging
 
 
@@ -892,9 +898,13 @@ def _consume_batch_events(state: SessionState) -> None:
 
 
 def _build_config_summary(config: Path) -> list[str]:
-    cfg = load_config(config)
+    cfg, meta = load_config_with_meta(config)
+    loaded = ", ".join(meta.loaded_files) if meta.loaded_files else "（未找到配置文件，使用默认值）"
     return [
         f"配置文件：{config}",
+        f"实际加载：{loaded}",
+        f"本地覆盖候选：{meta.local_override_path}",
+        f"LLM密钥来源：{meta.api_key_source}",
         f"ASR 后端：{cfg.asr.backend}",
         f"ASR 模型：{cfg.asr.model}",
         f"识别语言：{cfg.asr.language}",
@@ -914,10 +924,12 @@ def _build_config_summary(config: Path) -> list[str]:
 def _build_translation_check(config: Path) -> list[str]:
     from whisperlrc.translate.factory import build_translator
 
-    cfg = load_config(config)
+    cfg, meta = load_config_with_meta(config)
     lines = [
         f"配置文件：{config}",
         f"翻译后端：{cfg.translation.backend}",
+        f"LLM密钥来源：{meta.api_key_source}",
+        f"环境变量：{LLM_API_KEY_ENV_VAR}",
     ]
     try:
         translator = build_translator(cfg.translation)
@@ -1017,6 +1029,18 @@ def _format_value_for_menu(value: Any) -> str:
         if value and isinstance(value[0], dict):
             return f"{len(value)} 项"
         return ", ".join(str(v) for v in value) if value else "[]"
+    return str(value)
+
+
+def _format_field_value_for_menu(field_name: str, value: Any) -> str:
+    if field_name == "llm_api_key":
+        return "******" if str(value or "").strip() else '""'
+    return _format_value_for_menu(value)
+
+
+def _sanitize_field_value_for_log(field_name: str, value: Any) -> str:
+    if field_name == "llm_api_key":
+        return "<redacted>" if str(value or "").strip() else ""
     return str(value)
 
 
@@ -1507,7 +1531,7 @@ def _render_config_edit_fields_page(state: SessionState) -> Page:
             print()
         for i, (name, value) in enumerate(items):
             marker = ">" if i == state.edit_field_cursor else " "
-            print(f"{marker} {name} = {_format_value_for_menu(value)}")
+            print(f"{marker} {name} = {_format_field_value_for_menu(name, value)}")
 
         key = _read_nav_key()
         if key == "up":
@@ -1550,7 +1574,11 @@ def _render_config_edit_fields_page(state: SessionState) -> Page:
             _append_operation_log(
                 state,
                 "config_field_enter_edit",
-                {"section": section, "field": field_name, "current": str(current)},
+                {
+                    "section": section,
+                    "field": field_name,
+                    "current": _sanitize_field_value_for_log(field_name, current),
+                },
             )
             value_res = _read_line_with_cancel(f"新值 {field_name}", str(current), empty_as_default=True)
             if value_res.kind == "main":
@@ -1564,9 +1592,13 @@ def _render_config_edit_fields_page(state: SessionState) -> Page:
                 _append_operation_log(
                     state,
                     "config_field_updated",
-                    {"section": section, "field": field_name, "new_value": str(new_value)},
+                    {
+                        "section": section,
+                        "field": field_name,
+                        "new_value": _sanitize_field_value_for_log(field_name, new_value),
+                    },
                 )
-                notice = f"已更新 {field_name} = {_format_value_for_menu(new_value)}"
+                notice = f"已更新 {field_name} = {_format_field_value_for_menu(field_name, new_value)}"
             except Exception as e:
                 _append_operation_log(
                     state,
@@ -1612,7 +1644,7 @@ def _render_config_edit_llm_page(state: SessionState) -> Page:
             print()
         for i, (name, value) in enumerate(items):
             marker = ">" if i == state.edit_llm_cursor else " "
-            print(f"{marker} {name} = {_format_value_for_menu(value)}")
+            print(f"{marker} {name} = {_format_field_value_for_menu(name, value)}")
 
         key = _read_nav_key()
         if key == "up":
@@ -1651,7 +1683,7 @@ def _render_config_edit_llm_page(state: SessionState) -> Page:
             _append_operation_log(
                 state,
                 "llm_config_enter_edit",
-                {"field": field_name, "current": str(current)},
+                {"field": field_name, "current": _sanitize_field_value_for_log(field_name, current)},
             )
             value_res = _read_line_with_cancel(f"新值 {field_name}", str(current), empty_as_default=True)
             if value_res.kind == "main":
@@ -1665,9 +1697,12 @@ def _render_config_edit_llm_page(state: SessionState) -> Page:
                 _append_operation_log(
                     state,
                     "llm_config_updated",
-                    {"field": field_name, "new_value": str(new_value)},
+                    {
+                        "field": field_name,
+                        "new_value": _sanitize_field_value_for_log(field_name, new_value),
+                    },
                 )
-                notice = f"已更新 {field_name} = {_format_value_for_menu(new_value)}"
+                notice = f"已更新 {field_name} = {_format_field_value_for_menu(field_name, new_value)}"
             except Exception as e:
                 _append_operation_log(
                     state,

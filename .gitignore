@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 
 t/
+settings.toml
+settings.local.toml
+output/
+*.log

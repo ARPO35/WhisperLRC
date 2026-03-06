@@ -26,7 +26,23 @@ python main.py
 
 ## 配置
 
-默认配置文件是 `settings.toml`。当前版本仅支持交互式运行，程序会在菜单中读取配置并执行。
+推荐先基于模板初始化本地配置：
+
+```bash
+cp settings.toml.example settings.toml
+```
+
+```powershell
+Copy-Item settings.toml.example settings.toml
+```
+
+配置加载优先级（后者覆盖前者）：
+
+1. `settings.toml`
+2. `settings.local.toml`（可选，本地私有覆盖）
+3. 环境变量 `WHISPERLRC_LLM_API_KEY`（仅覆盖 `translation.llm_api_key`）
+
+默认会话配置路径是 `settings.toml`。当前版本仅支持交互式运行，程序会在菜单中读取配置并执行。
 请在 `[output]` 中设置默认路径：
 
 - `default_input_dir`（批处理默认输入目录）
@@ -36,12 +52,23 @@ python main.py
 
 - `llm_model`
 - `llm_base_url`
-- `llm_api_key`
+- `llm_api_key`（建议留空，改用环境变量注入）
 - `llm_enable_thinking`（是否启用模型思考模式，默认 `true`）
 - `llm_prompt_file`（提示词文件路径，支持相对或绝对路径）
 - `llm_preferences_file`（翻译偏好文件路径，支持相对或绝对路径）
 - `llm_batch_size`（默认每组 10 句）
 - `llm_context_window`（默认前后文各 5 句）
+
+Windows PowerShell 注入密钥示例：
+
+```powershell
+$env:WHISPERLRC_LLM_API_KEY = "sk-xxxx"
+python main.py
+```
+
+## 安全防护
+
+- 仓库已忽略本地敏感配置与运行产物：`settings.toml`、`settings.local.toml`、`output/`、`*.log`、`t/`。
 
 提示词与翻译偏好从上述路径读取。若配置相对路径，则按项目根目录解析：
 
