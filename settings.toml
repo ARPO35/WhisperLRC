@@ -7,7 +7,7 @@ compute_type = "float16"
 
 [pipeline]
 input_formats = ["mp3", "wav"]
-retry_asr = 3
+retry_asr = 2
 retry_translate = 5
 
 [translation]
@@ -20,12 +20,12 @@ llm_base_url = "https://api.siliconflow.cn/v1"
 llm_api_key = "sk-ezozekhvgculbauasqarvmuhsseolrfrsxlqmoegyuahuuxc"
 llm_prompt_file = "prompt.txt"
 llm_preferences_file = "preferences.txt"
-llm_batch_size = 10
+llm_batch_size = 15
 llm_context_window = 5
-timeout_sec = 30
+timeout_sec = 360
 
 [output]
-default_input_dir = "t/input"
+default_input_dir = "t/input_2"
 default_output_dir = "t/output"
 json_ext = ".json"
 write_lrc = true

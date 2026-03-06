@@ -412,7 +412,7 @@
       <audio id="audioPlayer" class="hidden-audio" preload="auto"></audio>
       <canvas id="timelineCanvas"></canvas>
       <div class="timeline-note">
-        波形即进度条：点击/拖动可跳转播放位置；白线为播放位置，淡白覆盖为当前字幕区间，青色为字幕起止锚点。支持拖动锚点与 Ctrl+滚轮缩放。
+        波形即进度条：点击/拖动可跳转播放位置；白线为播放位置，紫色覆盖为播放字幕区间，白色覆盖为选中字幕区间，青色为字幕起止锚点。支持拖动锚点/白色区间与 Ctrl+滚轮缩放，按住 Shift 微调拖动。
       </div>
     </section>
 
@@ -454,7 +454,7 @@
                 <input id="editEnd" type="number" step="0.001" min="0" />
               </div>
             </div>
-            <div class="small">可在此精确输入时间；时间轴拖动灵敏度较低用于微调。</div>
+            <div class="small">可在此精确输入时间；时间轴拖动默认灵敏，按住 Shift 可微调。</div>
           </div>
 
           <div class="editor-actions">
@@ -479,7 +479,9 @@
 
 <script>
   const EPS = 0.001;
-  const DRAG_SENSITIVITY = 0.22;
+  const DRAG_SENSITIVITY_NORMAL = 1.0;
+  const DRAG_SENSITIVITY_FINE = 0.10;
+  const CLICK_DRAG_THRESHOLD_PX = 4;
   const MIN_VIEW_SPAN_SEC = 1.0;
 
   const state = {
@@ -573,7 +575,12 @@
   }
 
   async function api(url, options = {}) {
-    const res = await fetch(url, options);
+    let res;
+    try {
+      res = await fetch(url, options);
+    } catch (e) {
+      throw new Error(`请求失败（服务可能已退出）：${e}`);
+    }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const detail = data && data.detail ? data.detail : res.statusText;
@@ -1158,6 +1165,22 @@
     ctx.fillText(`${fmtSec(state.viewStartSec)} - ${fmtSec(state.viewEndSec)} / ${fmtSec(state.audioDurationSec)}`, 10 * dpr, (rect.height * dpr) - 8 * dpr);
   }
 
+  function drawSelectedRangeOverlay(ctx, rect, dpr) {
+    const selected = getSelectedSentence();
+    if (!selected) return;
+    const start = Number(selected.start_sec || 0);
+    const end = Number(selected.end_sec || 0);
+    if (!(end > start)) return;
+    if (end < state.viewStartSec || start > state.viewEndSec) return;
+    const visStart = clamp(start, state.viewStartSec, state.viewEndSec);
+    const visEnd = clamp(end, state.viewStartSec, state.viewEndSec);
+    const x1 = secToX(visStart, rect) * dpr;
+    const x2 = secToX(visEnd, rect) * dpr;
+    const width = Math.max(1, x2 - x1);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.14)";
+    ctx.fillRect(x1, 0, width, rect.height * dpr);
+  }
+
   function drawActiveRangeOverlay(ctx, rect, dpr) {
     const active = getActiveSentence();
     if (!active) return;
@@ -1170,7 +1193,7 @@
     const x1 = secToX(visStart, rect) * dpr;
     const x2 = secToX(visEnd, rect) * dpr;
     const width = Math.max(1, x2 - x1);
-    ctx.fillStyle = "rgba(255, 255, 255, 0.14)";
+    ctx.fillStyle = "rgba(139, 92, 246, 0.26)";
     ctx.fillRect(x1, 0, width, rect.height * dpr);
   }
 
@@ -1222,6 +1245,7 @@
     ctx.fillRect(0, 0, w, h);
 
     drawWaveform(ctx, rect, dpr);
+    drawSelectedRangeOverlay(ctx, rect, dpr);
     drawActiveRangeOverlay(ctx, rect, dpr);
     drawAnchors(ctx, rect, dpr, buildAnchors(getSentences()));
     drawPlayhead(ctx, rect, dpr);
@@ -1494,22 +1518,73 @@
     return {anchor: best, rect};
   }
 
-  function applyAnchorSecond(anchor, sec) {
+  function findSelectedRangeAtCanvasX(clientX) {
+    const selected = getSelectedSentence();
+    if (!selected) return null;
+    const rect = getCanvas().getBoundingClientRect();
+    const x = clientX - rect.left;
+    const start = Number(selected.start_sec || 0);
+    const end = Number(selected.end_sec || 0);
+    if (!(end > start)) return null;
+    if (end < state.viewStartSec || start > state.viewEndSec) return null;
+    const visStart = clamp(start, state.viewStartSec, state.viewEndSec);
+    const visEnd = clamp(end, state.viewStartSec, state.viewEndSec);
+    if (!(visEnd > visStart)) return null;
+    const x1 = secToX(visStart, rect);
+    const x2 = secToX(visEnd, rect);
+    if (x < x1 || x > x2) return null;
+    const idx = getSentenceIndexById(selected.sentence_id);
+    if (idx < 0) return null;
+    return {idx, start, end};
+  }
+
+  function applyAnchorSecond(refs, sec) {
     const arr = getSentences();
     if (!arr.length) return {ok: false, touched: []};
+    const before = arr.map(s => ({
+      start: Number(s.start_sec || 0),
+      end: Number(s.end_sec || 0),
+    }));
     const oldVals = [];
     const touched = new Set();
+    const saved = new Set();
 
-    for (const r of anchor.refs) {
-      const s = arr[r.idx];
-      if (!s) continue;
-      touched.add(r.idx);
-      if (r.kind === "start") {
-        oldVals.push({idx: r.idx, field: "start_sec", val: Number(s.start_sec || 0)});
-        s.start_sec = sec;
-      } else {
-        oldVals.push({idx: r.idx, field: "end_sec", val: Number(s.end_sec || 0)});
-        s.end_sec = sec;
+    const setField = (idx, field, value) => {
+      const s = arr[idx];
+      if (!s) return;
+      const key = `${idx}:${field}`;
+      if (!saved.has(key)) {
+        oldVals.push({idx, field, val: Number(s[field] || 0)});
+        saved.add(key);
+      }
+      s[field] = value;
+      touched.add(idx);
+    };
+
+    for (const r of refs) {
+      if (r.kind === "start") setField(r.idx, "start_sec", sec);
+      else setField(r.idx, "end_sec", sec);
+    }
+
+    for (const r of refs) {
+      if (r.kind === "end") {
+        const nextIdx = r.idx + 1;
+        const next = arr[nextIdx];
+        const prevEnd = before[r.idx] ? before[r.idx].end : null;
+        const prevNextStart = before[nextIdx] ? before[nextIdx].start : null;
+        if (next && prevEnd != null && prevNextStart != null
+          && (sec + EPS >= prevNextStart || almostEqual(prevNextStart, prevEnd))) {
+          setField(nextIdx, "start_sec", sec);
+        }
+      } else if (r.kind === "start") {
+        const prevIdx = r.idx - 1;
+        const prev = arr[prevIdx];
+        const prevStart = before[r.idx] ? before[r.idx].start : null;
+        const prevEnd = before[prevIdx] ? before[prevIdx].end : null;
+        if (prev && prevStart != null && prevEnd != null
+          && (sec <= prevEnd + EPS || almostEqual(prevEnd, prevStart))) {
+          setField(prevIdx, "end_sec", sec);
+        }
       }
     }
 
@@ -1566,22 +1641,36 @@
   function handleCanvasMouseDown(e) {
     e.preventDefault();
     const hit = findAnchorAtCanvasX(e.clientX);
-    if (!hit) {
-      seekByCanvasClientX(e.clientX);
-      state.drag = {mode: "seek"};
+    if (hit) {
+      const dur = Number(state.audioDurationSec || 0);
+      state.drag = {
+        mode: "anchor",
+        refs: hit.anchor.refs.map(r => ({idx: r.idx, kind: r.kind})),
+        startX: e.clientX,
+        initialSec: Number(hit.anchor.sec),
+        dur,
+        touched: [],
+        moved: false,
+      };
       return;
     }
-    const dur = Number(state.audioDurationSec || 0);
-    state.drag = {
-      mode: "anchor",
-      anchorKey: hit.anchor.key,
-      refs: hit.anchor.refs.map(r => ({idx: r.idx, kind: r.kind})),
-      startX: e.clientX,
-      initialSec: Number(hit.anchor.sec),
-      dur,
-      touched: [],
-      moved: false,
-    };
+    const seg = findSelectedRangeAtCanvasX(e.clientX);
+    if (seg) {
+      seekByCanvasClientX(e.clientX);
+      state.drag = {
+        mode: "segment",
+        idx: seg.idx,
+        startX: e.clientX,
+        initialStart: seg.start,
+        initialEnd: seg.end,
+        dur: Number(state.audioDurationSec || el("audioPlayer").duration || 0),
+        moved: false,
+        changed: false,
+      };
+      return;
+    }
+    seekByCanvasClientX(e.clientX);
+    state.drag = {mode: "seek", moved: false};
   }
 
   function handleCanvasMouseMove(e) {
@@ -1595,19 +1684,42 @@
     const span = Math.max(0.0001, state.viewEndSec - state.viewStartSec);
     const secPerPx = span / Math.max(1, rect.width);
     const deltaPx = e.clientX - state.drag.startX;
-    const deltaSec = deltaPx * secPerPx * DRAG_SENSITIVITY;
-    const targetSec = clamp(state.drag.initialSec + deltaSec, 0, Math.max(0, state.drag.dur));
+    const sensitivity = e.shiftKey ? DRAG_SENSITIVITY_FINE : DRAG_SENSITIVITY_NORMAL;
 
-    const anchors = buildAnchors(getSentences());
-    const anchor = anchors.find(a => a.key === state.drag.anchorKey);
-    if (!anchor) return;
-    const res = applyAnchorSecond(anchor, targetSec);
-    if (!res.ok) return;
-    state.drag.touched = res.touched;
-    state.drag.moved = true;
-    updateEditorBySelected();
-    renderSentenceTable();
-    requestDraw();
+    if (state.drag.mode === "anchor") {
+      const deltaSec = deltaPx * secPerPx * sensitivity;
+      const targetSec = clamp(state.drag.initialSec + deltaSec, 0, Math.max(0, state.drag.dur));
+      const res = applyAnchorSecond(state.drag.refs, targetSec);
+      if (!res.ok) return;
+      state.drag.touched = res.touched;
+      state.drag.moved = Math.abs(deltaPx) >= CLICK_DRAG_THRESHOLD_PX;
+      updateEditorBySelected();
+      renderSentenceTable();
+      requestDraw();
+      return;
+    }
+
+    if (state.drag.mode === "segment") {
+      const arr = getSentences();
+      const s = arr[state.drag.idx];
+      if (!s) return;
+      const rawDeltaSec = deltaPx * secPerPx * sensitivity;
+      const minDelta = -Number(state.drag.initialStart || 0);
+      let maxDelta = Number.POSITIVE_INFINITY;
+      if (Number(state.drag.dur) > 0) {
+        maxDelta = Number(state.drag.dur) - Number(state.drag.initialEnd || 0);
+      }
+      const deltaSec = clamp(rawDeltaSec, minDelta, maxDelta);
+      const nextStart = Number(state.drag.initialStart || 0) + deltaSec;
+      const nextEnd = Number(state.drag.initialEnd || 0) + deltaSec;
+      s.start_sec = nextStart;
+      s.end_sec = nextEnd;
+      state.drag.moved = Math.abs(deltaPx) >= CLICK_DRAG_THRESHOLD_PX;
+      state.drag.changed = Math.abs(deltaSec) > EPS;
+      updateEditorBySelected();
+      renderSentenceTable();
+      requestDraw();
+    }
   }
 
   async function handleCanvasMouseUp() {
@@ -1615,6 +1727,12 @@
     const drag = state.drag;
     state.drag = null;
     if (drag.mode === "seek") return;
+    if (drag.mode === "segment") {
+      if (!drag.moved || !drag.changed) return;
+      markDirty();
+      setMsg("时间戳已更新到草稿，请保存文件。");
+      return;
+    }
     if (!drag.moved || !drag.touched.length) return;
     markDirty();
     setMsg("时间戳已更新到草稿，请保存文件。");
@@ -1657,82 +1775,131 @@
     return [];
   }
 
-  async function applyRelisten(ids, stageOffset, stageTotal) {
-    let ok = 0;
-    let fail = 0;
-    for (let i = 0; i < ids.length; i += 1) {
-      const sid = ids[i];
-      const idx = getSentenceIndexById(sid);
-      if (idx < 0) continue;
-      updateProgress(stageOffset + i + 1, stageTotal, `重识别 ${sid}`);
-      const sentence = getSentences()[idx];
-      try {
-        const resp = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/sentences/${encodeURIComponent(sid)}/relisten_once`, {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({draft_sentence: buildDraftSentence(sentence)}),
-        });
-        const ja = String(resp.ja_text || "").trim();
-        if (ja) {
-          sentence.review_text_ja = ja;
-          ok += 1;
-        } else {
-          fail += 1;
-        }
-      } catch (_e) {
-        fail += 1;
-      }
-    }
-    return {ok, fail};
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  async function applyTranslate(ids, stageOffset, stageTotal) {
-    const segments = getSelectionSegments(ids);
-    let ok = 0;
-    let fail = 0;
-    let processed = 0;
-    for (const seg of segments) {
-      const draftSentences = [];
-      for (const sid of seg) {
-        const idx = getSentenceIndexById(sid);
-        if (idx >= 0) draftSentences.push(buildDraftSentence(getSentences()[idx]));
-      }
-      try {
-        const resp = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/auto_translate_batch`, {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            sentence_ids: seg,
-            draft_sentences: draftSentences,
-          }),
-        });
-        const trans = Array.isArray(resp.translations) ? resp.translations : [];
-        const map = new Map(trans.map(x => [String(x.sentence_id || ""), String(x.zh_text || "")]));
-        for (const sid of seg) {
-          processed += 1;
-          updateProgress(stageOffset + processed, stageTotal, `翻译 ${sid}`);
-          const idx = getSentenceIndexById(sid);
-          if (idx < 0) {
-            fail += 1;
-            continue;
-          }
-          const zh = map.get(sid);
-          if (typeof zh === "string") {
-            getSentences()[idx].review_text_zh = zh;
-            ok += 1;
-          } else {
-            fail += 1;
-          }
-        }
-      } catch (_e) {
-        for (const sid of seg) {
-          processed += 1;
-          updateProgress(stageOffset + processed, stageTotal, `翻译 ${sid}`);
-          fail += 1;
-        }
+  function isTerminalJobStatus(status) {
+    return status === "succeeded" || status === "partial_failed" || status === "failed" || status === "cancelled";
+  }
+
+  function jobStageLabel(stage) {
+    if (stage === "queued") return "排队中";
+    if (stage === "running") return "处理中";
+    if (stage === "relisten") return "重识别";
+    if (stage === "translate") return "翻译";
+    if (stage === "retrying") return "重试中";
+    if (stage === "cancelled") return "已取消";
+    return "处理中";
+  }
+
+  function logJobConsole(message, extra = null) {
+    const prefix = "[WhisperLRC Job]";
+    const ts = new Date().toISOString();
+    if (extra == null) {
+      console.log(`${prefix} ${ts} ${message}`);
+      return;
+    }
+    console.log(`${prefix} ${ts} ${message}`, extra);
+  }
+
+  function applyJobResultToDraft(result) {
+    const arr = getSentences();
+    const byId = new Map(arr.map(s => [String(s.sentence_id || ""), s]));
+    const rawUpdates = (result && typeof result === "object") ? result.updates : null;
+    const updates = (rawUpdates && typeof rawUpdates === "object") ? rawUpdates : {};
+    const jaUpdates = Array.isArray(updates.ja) ? updates.ja : [];
+    const zhUpdates = Array.isArray(updates.zh) ? updates.zh : [];
+    let applied = 0;
+
+    for (const item of jaUpdates) {
+      if (!item || typeof item !== "object") continue;
+      const sid = String(item.sentence_id || "");
+      const s = byId.get(sid);
+      if (!s) continue;
+      const ja = String(item.ja_text || "");
+      if (s.review_text_ja !== ja) {
+        s.review_text_ja = ja;
+        applied += 1;
       }
     }
-    return {ok, fail};
+    for (const item of zhUpdates) {
+      if (!item || typeof item !== "object") continue;
+      const sid = String(item.sentence_id || "");
+      const s = byId.get(sid);
+      if (!s) continue;
+      const zh = String(item.zh_text || "");
+      if (s.review_text_zh !== zh) {
+        s.review_text_zh = zh;
+        applied += 1;
+      }
+    }
+
+    const successIds = Array.isArray(result && result.success_ids) ? result.success_ids.map(x => String(x || "")) : [];
+    const failedIds = Array.isArray(result && result.failed_ids) ? result.failed_ids.map(x => String(x || "")) : [];
+    return {
+      ok: successIds.filter(Boolean).length,
+      fail: failedIds.filter(Boolean).length,
+      applied,
+      errors: Array.isArray(result && result.errors) ? result.errors.map(x => String(x || "")) : [],
+    };
+  }
+
+  async function waitForJobDone(taskId, jobId, fallbackTotal) {
+    let latest = null;
+    let lastStage = "";
+    let lastDone = -1;
+    let lastAttempt = -1;
+    let lastErrCount = -1;
+    let lastLogCount = -1;
+    for (;;) {
+      const data = await api(`/api/tasks/${encodeURIComponent(taskId)}/jobs/${encodeURIComponent(jobId)}`);
+      latest = data;
+      const prog = (data && typeof data.progress === "object") ? data.progress : {};
+      const done = Number(prog.done || 0);
+      const total = Math.max(1, Number(prog.total || fallbackTotal || 1));
+      const stage = jobStageLabel(String(prog.stage || ""));
+      const sid = String(prog.current_sentence_id || "");
+      const attempt = Number(data.attempt || 0);
+      const maxAttempts = Number(data.max_attempts || 0);
+      const attemptErrors = Array.isArray(data.attempt_errors) ? data.attempt_errors.map(x => String(x || "")) : [];
+      const jobLogs = Array.isArray(data.logs) ? data.logs.map(x => String(x || "")) : [];
+      const attemptText = maxAttempts > 0 && attempt > 0 ? ` | 尝试 ${attempt}/${maxAttempts}` : "";
+      const sidText = sid ? ` ${sid}` : "";
+      updateProgress(done, total, `${stage}${sidText}${attemptText}`);
+      if (stage !== lastStage || done !== lastDone || attempt !== lastAttempt) {
+        logJobConsole(
+          `轮询进度 job=${jobId} status=${String(data.status || "")} stage=${String(prog.stage || "")} done=${done}/${total} sid=${sid || "-"} attempt=${attempt}/${maxAttempts || 0}`
+        );
+        lastStage = stage;
+        lastDone = done;
+        lastAttempt = attempt;
+      }
+      if (attemptErrors.length !== lastErrCount) {
+        const startErr = Math.max(0, lastErrCount);
+        lastErrCount = attemptErrors.length;
+        if (attemptErrors.length > 0) {
+          logJobConsole(`任务错误历史 job=${jobId} count=${attemptErrors.length}`, attemptErrors);
+          for (let i = startErr; i < attemptErrors.length; i += 1) {
+            const errLine = String(attemptErrors[i] || "");
+            if (errLine) logJobConsole(`任务错误详情 job=${jobId} #${i + 1}: ${errLine}`);
+          }
+        }
+      }
+      if (jobLogs.length !== lastLogCount) {
+        const start = Math.max(0, lastLogCount);
+        for (let i = start; i < jobLogs.length; i += 1) {
+          const line = String(jobLogs[i] || "");
+          if (line) logJobConsole(`任务内部日志 job=${jobId} #${i + 1}: ${line}`);
+        }
+        lastLogCount = jobLogs.length;
+      }
+      if (isTerminalJobStatus(String(data.status || ""))) {
+        logJobConsole(`任务进入终态 job=${jobId} status=${String(data.status || "")}`, data);
+        return latest;
+      }
+      await sleep(500);
+    }
   }
 
   async function runBatchAction(kind) {
@@ -1750,31 +1917,60 @@
     const total = kind === "retranslate" ? ids.length * 2 : ids.length;
     state.actionRunning = true;
     showProgress(titleMap[kind] || "处理中", total);
-    let ok = 0;
-    let fail = 0;
     try {
-      if (kind === "relisten") {
-        const r = await applyRelisten(ids, 0, total);
-        ok += r.ok;
-        fail += r.fail;
-      } else if (kind === "auto_translate") {
-        const r = await applyTranslate(ids, 0, total);
-        ok += r.ok;
-        fail += r.fail;
-      } else if (kind === "retranslate") {
-        const r1 = await applyRelisten(ids, 0, total);
-        ok += r1.ok;
-        fail += r1.fail;
-        const r2 = await applyTranslate(ids, ids.length, total);
-        ok += r2.ok;
-        fail += r2.fail;
+      logJobConsole(`准备提交任务 kind=${kind} total=${total} task=${state.currentTaskId}`, {sentence_ids: ids});
+      const draftSentences = [];
+      for (const sid of ids) {
+        const idx = getSentenceIndexById(sid);
+        if (idx >= 0) draftSentences.push(buildDraftSentence(getSentences()[idx]));
       }
-      markDirty();
-      updateEditorBySelected();
-      renderSentenceTable();
-      requestDraw();
-      finishProgress(`完成 | 成功 ${ok} | 失败 ${fail}`, fail > 0);
-      setMsg(`${titleMap[kind]}完成：成功 ${ok}，失败 ${fail}。请保存文件。`, fail > 0);
+      const created = await api(`/api/tasks/${encodeURIComponent(state.currentTaskId)}/jobs`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          kind,
+          sentence_ids: ids,
+          draft_sentences: draftSentences,
+        }),
+      });
+      const jobId = String(created.job_id || "");
+      if (!jobId) {
+        throw new Error("任务创建失败：未返回 job_id");
+      }
+      logJobConsole(`任务创建成功 job=${jobId} kind=${kind}`, created);
+      const finalJob = await waitForJobDone(state.currentTaskId, jobId, total);
+      const status = String(finalJob.status || "");
+
+      if (status === "succeeded" || status === "partial_failed") {
+        const stat = applyJobResultToDraft(finalJob.result || {});
+        if (stat.applied > 0) {
+          markDirty();
+        }
+        updateEditorBySelected();
+        renderSentenceTable();
+        requestDraw();
+        finishProgress(`完成 | 成功 ${stat.ok} | 失败 ${stat.fail}`, stat.fail > 0);
+        const errHint = stat.errors.length ? ` | ${stat.errors.slice(0, 2).join(" ; ")}` : "";
+        setMsg(`${titleMap[kind]}完成：成功 ${stat.ok}，失败 ${stat.fail}。请保存文件。${errHint}`, stat.fail > 0);
+        logJobConsole(`任务完成 kind=${kind} status=${status} ok=${stat.ok} fail=${stat.fail} applied=${stat.applied}`, {
+          errors: stat.errors,
+          final_job: finalJob,
+        });
+      } else if (status === "cancelled") {
+        finishProgress("已取消", true);
+        setMsg(`${titleMap[kind]}已取消。`, true);
+        logJobConsole(`任务取消 kind=${kind} job=${String(finalJob.job_id || "")}`, finalJob);
+      } else {
+        const errs = Array.isArray(finalJob.result && finalJob.result.errors) ? finalJob.result.errors.map(x => String(x || "")) : [];
+        const errText = String(finalJob.error || errs.join(" ; ") || "后台任务失败");
+        finishProgress(`失败 | ${errText}`, true);
+        setMsg(`${titleMap[kind]}失败：${errText}`, true);
+        logJobConsole(`任务失败 kind=${kind} job=${String(finalJob.job_id || "")} error=${errText}`, finalJob);
+      }
+    } catch (e) {
+      finishProgress(`失败 | ${e}`, true);
+      setMsg(`${titleMap[kind]}失败：${e}`, true);
+      logJobConsole(`任务异常 kind=${kind}`, e);
     } finally {
       state.actionRunning = false;
     }
@@ -1840,6 +2036,11 @@
     });
   }
 
+  function isEditableTarget(node) {
+    if (!(node instanceof Element)) return false;
+    return Boolean(node.closest("input, textarea, [contenteditable=''], [contenteditable='true'], [contenteditable='plaintext-only']"));
+  }
+
   el("refreshTasks").onclick = () => {
     if (state.dirty) {
       const ok = window.confirm("存在未保存修改，刷新任务列表将丢失草稿，是否继续？");
@@ -1882,6 +2083,12 @@
   el("actRetranslate").onclick = () => runBatchAction("retranslate").catch(e => setMsg(String(e), true));
   document.addEventListener("keydown", (e) => {
     const k = String(e.key || "").toLowerCase();
+    if (e.code === "Space" && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (isEditableTarget(e.target)) return;
+      e.preventDefault();
+      togglePlayPause().catch(err => setMsg(String(err), true));
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && k === "s") {
       e.preventDefault();
       saveTaskFile().catch(err => setMsg(String(err), true));
@@ -1901,3 +2108,4 @@
 </script>
 </body>
 </html>
+

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,6 @@ from typing import Any
 from whisperlrc.config import load_config
 from whisperlrc.output.lrc_writer import format_lrc_time
 from whisperlrc.translate.factory import build_translator
-from whisperlrc.translate.relisten_tool import RelistenOptions, WhisperRelistenExecutor
 from whisperlrc.translate.tooling import SentenceRef, TranslationToolContext
 
 
@@ -48,6 +48,8 @@ def _atomic_write_text(path: Path, text: str) -> None:
 class ReviewService:
     MIN_SENTENCE_SEC = 0.05
     DEFAULT_INSERT_MIN_DURATION_SEC = 0.5
+    _relisten_model_cache_lock = threading.Lock()
+    _relisten_model_cache: dict[tuple[str, str, str], Any] = {}
 
     def __init__(self, output_dir: Path, *, config_path: Path | None = None) -> None:
         self.output_dir = output_dir.resolve()
@@ -476,6 +478,27 @@ class ReviewService:
         except Exception as e:
             raise ValueError(f"加载配置失败：{self.config_path} | {e}") from e
 
+    def _get_shared_relisten_model(self, *, model: str, device: str, compute_type: str) -> Any:
+        key = (str(model or ""), str(device or ""), str(compute_type or ""))
+        with self._relisten_model_cache_lock:
+            cached = self._relisten_model_cache.get(key)
+            if cached is not None:
+                return cached
+
+        from faster_whisper import WhisperModel
+
+        created = WhisperModel(
+            model_size_or_path=key[0],
+            device=key[1],
+            compute_type=key[2],
+        )
+        with self._relisten_model_cache_lock:
+            cached = self._relisten_model_cache.get(key)
+            if cached is not None:
+                return cached
+            self._relisten_model_cache[key] = created
+            return created
+
     def relisten_sentence_once(
         self,
         *,
@@ -483,6 +506,8 @@ class ReviewService:
         sentence_id: str,
         draft_sentence: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        from whisperlrc.translate.relisten_tool import RelistenOptions, WhisperRelistenExecutor
+
         path = self._resolve_task_path(task_id)
         payload = self._load_task(path)
         draft_map = self._build_draft_map([draft_sentence] if isinstance(draft_sentence, dict) else [])
@@ -498,11 +523,16 @@ class ReviewService:
 
         cfg = self._load_runtime_config()
         audio_path = self.resolve_audio_path(task_id)
+        shared_model = self._get_shared_relisten_model(
+            model=cfg.asr.model,
+            device=cfg.asr.device,
+            compute_type=cfg.asr.compute_type,
+        )
         tool_ctx = TranslationToolContext(
             audio_path=str(audio_path),
             sentences=refs,
             asr_config=cfg.asr,
-            shared_model=None,
+            shared_model=shared_model,
         )
         executor = WhisperRelistenExecutor(tool_ctx, RelistenOptions(candidate_count=1))
         result = executor.relisten_by_global_index(target_idx)
@@ -879,3 +909,4 @@ class ReviewService:
         if not audio_path.exists():
             raise FileNotFoundError(f"音频文件不存在：{audio_path}")
         return audio_path
+

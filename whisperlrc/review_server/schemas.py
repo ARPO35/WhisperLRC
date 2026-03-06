@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 
 ReviewState = Literal["pending", "accepted", "needs_check"]
 TaskStatus = Literal["todo", "in_review", "done", "partial", "failed", "ok", "asr_done", "translating", "cancelled"]
+JobKind = Literal["relisten", "auto_translate", "retranslate"]
+JobStatus = Literal["queued", "running", "succeeded", "partial_failed", "failed", "cancelled"]
 
 
 class SentencePatchRequest(BaseModel):
@@ -57,3 +59,9 @@ class SentenceActionRequest(BaseModel):
 class BatchAutoTranslateRequest(BaseModel):
     sentence_ids: list[str] = Field(default_factory=list, description="待翻译句子 ID 列表（按翻译顺序）")
     draft_sentences: list[SentenceDraft] = Field(default_factory=list, description="可选草稿句子列表")
+
+
+class JobCreateRequest(BaseModel):
+    kind: JobKind = Field(description="任务类型：relisten/auto_translate/retranslate")
+    sentence_ids: list[str] = Field(default_factory=list, description="目标句子 ID 列表")
+    draft_sentences: list[SentenceDraft] = Field(default_factory=list, description="当前前端草稿句子")

@@ -11,11 +11,13 @@ from whisperlrc.review_server.schemas import (
     BatchAutoTranslateRequest,
     ExportRequest,
     InsertSentenceRequest,
+    JobCreateRequest,
     SentenceActionRequest,
     SentencePatchRequest,
     TaskSaveRequest,
     TaskStatusPatchRequest,
 )
+from whisperlrc.review_server.job_manager import ReviewJobManager
 from whisperlrc.review_server.service import ReviewService
 
 
@@ -36,6 +38,7 @@ def _model_to_dict(model: Any) -> dict[str, Any]:
 def create_app(*, output_dir: Path, config_path: Path | None = None) -> FastAPI:
     app = FastAPI(title="WhisperLRC Review UI", version="1.0.0")
     service = ReviewService(output_dir=output_dir, config_path=config_path)
+    jobs = ReviewJobManager(output_dir=output_dir, config_path=config_path)
     static_dir = Path(__file__).resolve().parent / "static"
     index_file = static_dir / "index.html"
 
@@ -55,6 +58,10 @@ def create_app(*, output_dir: Path, config_path: Path | None = None) -> FastAPI:
             "output_dir": str(service.output_dir),
             "version": "1.0.0",
         }
+
+    @app.on_event("shutdown")
+    def _on_shutdown() -> None:
+        jobs.shutdown()
 
     @app.get("/api/tasks")
     def list_tasks() -> dict[str, Any]:
@@ -144,6 +151,35 @@ def create_app(*, output_dir: Path, config_path: Path | None = None) -> FastAPI:
                 sentence_ids=body.sentence_ids,
                 draft_sentences=[_model_to_dict(x) for x in body.draft_sentences],
             )
+        except Exception as e:
+            _raise_http(e)
+            raise
+
+    @app.post("/api/tasks/{task_id}/jobs")
+    def create_job(task_id: str, body: JobCreateRequest) -> dict[str, Any]:
+        try:
+            return jobs.create_job(
+                task_id=task_id,
+                kind=body.kind,
+                sentence_ids=body.sentence_ids,
+                draft_sentences=[_model_to_dict(x) for x in body.draft_sentences],
+            )
+        except Exception as e:
+            _raise_http(e)
+            raise
+
+    @app.get("/api/tasks/{task_id}/jobs/{job_id}")
+    def get_job(task_id: str, job_id: str) -> dict[str, Any]:
+        try:
+            return jobs.get_job(task_id=task_id, job_id=job_id)
+        except Exception as e:
+            _raise_http(e)
+            raise
+
+    @app.post("/api/tasks/{task_id}/jobs/{job_id}/cancel")
+    def cancel_job(task_id: str, job_id: str) -> dict[str, Any]:
+        try:
+            return jobs.cancel_job(task_id=task_id, job_id=job_id)
         except Exception as e:
             _raise_http(e)
             raise
