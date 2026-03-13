@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any, Callable
 from urllib import error, request
@@ -813,6 +814,8 @@ class LLMTranslator(Translator):
         raise RuntimeError("JSON 解析失败：未找到有效 JSON 对象")
 
     def _project_root(self) -> Path:
+        if getattr(sys, 'frozen', False):
+            return Path(sys.executable).resolve().parent
         return Path(__file__).resolve().parents[2]
 
     def _resolve_config_path(self, raw_path: str) -> Path:
@@ -893,3 +896,5 @@ class LLMTranslator(Translator):
     def _merge_terms(self, terms: list[dict[str, str]]) -> None:
         for item in terms:
             self._add_term_from_obj(item)
+
+
