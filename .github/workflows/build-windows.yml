@@ -48,6 +48,13 @@ jobs:
       - name: Build onedir bundle
         run: python -m PyInstaller --clean WhisperLRC.spec
 
+      - name: Stage root resource files
+        shell: pwsh
+        run: |
+          Copy-Item 'prompt.txt' 'dist/WhisperLRC/prompt.txt' -Force
+          Copy-Item 'preferences.txt' 'dist/WhisperLRC/preferences.txt' -Force
+          Copy-Item 'settings.toml.example' 'dist/WhisperLRC/settings.toml.example' -Force
+
       - name: Verify bundle contents
         run: python scripts/ci/verify_dist.py dist/WhisperLRC
 
@@ -103,3 +110,4 @@ jobs:
           files: |
             dist/WhisperLRC-Setup.exe
             dist/WhisperLRC-onedir.zip
+
