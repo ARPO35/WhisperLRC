@@ -35,10 +35,13 @@ jobs:
           "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upgrade pip
-        run: python -m pip install --upgrade pip
+        run: python -m pip install --upgrade pip setuptools wheel
 
       - name: Install Python dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install --prefer-binary --only-binary=:all: --no-compile -r requirements.txt
+
+      - name: Snapshot installed packages
+        run: python -m pip list
 
       - name: Smoke import check
         run: python scripts/ci/check_imports.py
