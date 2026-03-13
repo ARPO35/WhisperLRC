@@ -3,7 +3,7 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
-project_dir = Path(SPECPATH).resolve().parent
+project_dir = Path(SPECPATH).resolve()
 block_cipher = None
 
 
@@ -75,3 +75,4 @@ coll = COLLECT(
     name='WhisperLRC',
     contents_directory='.',
 )
+
