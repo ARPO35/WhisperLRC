@@ -36,6 +36,8 @@ cp settings.toml.example settings.toml
 Copy-Item settings.toml.example settings.toml
 ```
 
+发布版安装目录会直接提供 `settings.toml`；仓库仍保留 `settings.toml.example` 作为开发模板，升级安装不会覆盖已有的 `settings.toml`。
+
 配置加载优先级（后者覆盖前者）：
 
 1. `settings.toml`
