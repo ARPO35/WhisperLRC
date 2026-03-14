@@ -17,7 +17,6 @@ def _try_collect_submodules(package: str) -> list[str]:
 datas = [
     (str(project_dir / 'prompt.txt'), '.'),
     (str(project_dir / 'preferences.txt'), '.'),
-    (str(project_dir / 'settings.toml.example'), '.'),
 ]
 datas += collect_data_files('whisperlrc.review_server', includes=['static/*'])
 datas += collect_data_files('faster_whisper')

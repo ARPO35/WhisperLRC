@@ -7,7 +7,7 @@ REQUIRED_FILES = [
     ('WhisperLRC.exe', ['WhisperLRC.exe']),
     ('prompt.txt', ['prompt.txt']),
     ('preferences.txt', ['preferences.txt']),
-    ('settings.toml.example', ['settings.toml.example']),
+    ('settings.toml', ['settings.toml']),
     (
         'whisperlrc/review_server/static/index.html',
         [
@@ -15,6 +15,10 @@ REQUIRED_FILES = [
             '_internal/whisperlrc/review_server/static/index.html',
         ],
     ),
+]
+
+FORBIDDEN_FILES = [
+    'settings.toml.example',
 ]
 
 
@@ -33,9 +37,17 @@ def main(argv: list[str]) -> int:
             print(f'MISSING: {rel}')
         return 1
 
+    forbidden = [rel for rel in FORBIDDEN_FILES if (dist_dir / rel).exists()]
+    if forbidden:
+        for rel in forbidden:
+            print(f'FORBIDDEN: {rel}')
+        return 1
+
     for label, candidates in REQUIRED_FILES:
         found = next(rel for rel in candidates if (dist_dir / rel).exists())
         print(f'OK: {label} -> {found}')
+    for rel in FORBIDDEN_FILES:
+        print(f'OK: absent -> {rel}')
     return 0
 
 

@@ -55,7 +55,10 @@ jobs:
         run: |
           Copy-Item 'prompt.txt' 'dist/WhisperLRC/prompt.txt' -Force
           Copy-Item 'preferences.txt' 'dist/WhisperLRC/preferences.txt' -Force
-          Copy-Item 'settings.toml.example' 'dist/WhisperLRC/settings.toml.example' -Force
+          Copy-Item 'settings.toml.example' 'dist/WhisperLRC/settings.toml' -Force
+          if (Test-Path 'dist/WhisperLRC/settings.toml.example') {
+            Remove-Item 'dist/WhisperLRC/settings.toml.example' -Force
+          }
 
       - name: Verify bundle contents
         run: python scripts/ci/verify_dist.py dist/WhisperLRC
